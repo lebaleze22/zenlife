@@ -24,11 +24,14 @@ class BudgetViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
     queryset = Budget.objects.all().order_by("-created_at")
 
     def get_queryset(self):
-        qs = self.queryset.filter(user=self.request.user, deleted_at__isnull=True)
+        qs = self.queryset.filter(user=self.request.user)
         period_type = self.request.query_params.get("period_type")
         if period_type:
             qs = qs.filter(period_type=period_type)
-        return qs
+        return self.apply_deleted_filter(qs)
+
+    def get_restore_queryset(self):
+        return self.queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
@@ -82,6 +85,7 @@ class BudgetViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
         latest_payload = None
         if latest:
             result = BudgetPeriodComputationService.compute(latest)
+            alerts = BudgetPeriodComputationService.evaluate_threshold_alerts(latest, result)
             latest_payload = {
                 "id": latest.id,
                 "period_start": latest.period_start,
@@ -96,6 +100,16 @@ class BudgetViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
                     "recorded_income": str(result.recorded_income),
                     "available": str(result.available),
                 },
+                "alerts": [
+                    {
+                        "code": alert.code,
+                        "threshold_percent": alert.threshold_percent,
+                        "usage_percent": str(alert.usage_percent),
+                        "level": alert.level,
+                        "message": alert.message,
+                    }
+                    for alert in alerts
+                ],
             }
 
         return Response(
@@ -120,7 +134,7 @@ class BudgetPeriodViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
     queryset = BudgetPeriod.objects.select_related("budget").all().order_by("-period_start")
 
     def get_queryset(self):
-        qs = self.queryset.filter(budget__user=self.request.user, deleted_at__isnull=True, budget__deleted_at__isnull=True)
+        qs = self.queryset.filter(budget__user=self.request.user, budget__deleted_at__isnull=True)
 
         budget_id = self.request.query_params.get("budget_id")
         from_date = self.request.query_params.get("from")
@@ -136,12 +150,16 @@ class BudgetPeriodViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
         if status_filter:
             qs = qs.filter(status=status_filter)
 
-        return qs
+        return self.apply_deleted_filter(qs)
+
+    def get_restore_queryset(self):
+        return self.queryset.filter(budget__user=self.request.user, budget__deleted_at__isnull=True)
 
     @action(detail=True, methods=["post"], url_path="compute")
     def compute(self, request, pk=None):
         period = self.get_object()
         result = BudgetPeriodComputationService.apply_to_period(period)
+        alerts = BudgetPeriodComputationService.evaluate_threshold_alerts(period, result)
         return Response(
             {
                 "period_id": period.id,
@@ -157,6 +175,16 @@ class BudgetPeriodViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
                     "recorded_income": str(result.recorded_income),
                     "available": str(result.available),
                 },
+                "alerts": [
+                    {
+                        "code": alert.code,
+                        "threshold_percent": alert.threshold_percent,
+                        "usage_percent": str(alert.usage_percent),
+                        "level": alert.level,
+                        "message": alert.message,
+                    }
+                    for alert in alerts
+                ],
             },
             status=status.HTTP_200_OK,
         )

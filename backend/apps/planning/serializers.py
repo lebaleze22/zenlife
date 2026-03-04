@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from apps.accounts.models import Account, Category
 from .models import ToBuyItem, TodoItem, ToBuyReservation
 
 
@@ -89,6 +90,39 @@ class ToBuyReservationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"budget_period": "Budget period does not belong to current user."})
             if budget_period.deleted_at is not None or budget_period.budget.deleted_at is not None:
                 raise serializers.ValidationError({"budget_period": "Cannot reserve on a deleted budget period."})
+
+        if amount is not None and amount <= 0:
+            raise serializers.ValidationError({"amount": "Amount must be > 0."})
+
+        return attrs
+
+
+class MarkRecordedSerializer(serializers.Serializer):
+    account_id = serializers.IntegerField(required=False)
+    category_id = serializers.IntegerField(required=False)
+    amount = serializers.DecimalField(required=False, max_digits=14, decimal_places=2)
+    entry_date = serializers.DateField(required=False)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        if request is None:
+            return attrs
+
+        user = request.user
+        account_id = attrs.get("account_id")
+        category_id = attrs.get("category_id")
+        amount = attrs.get("amount")
+
+        if account_id is not None:
+            exists = Account.objects.filter(id=account_id, user=user, deleted_at__isnull=True, is_active=True).exists()
+            if not exists:
+                raise serializers.ValidationError({"account_id": "Account not found for current user."})
+
+        if category_id is not None:
+            exists = Category.objects.filter(id=category_id, user=user, deleted_at__isnull=True).exists()
+            if not exists:
+                raise serializers.ValidationError({"category_id": "Category not found for current user."})
 
         if amount is not None and amount <= 0:
             raise serializers.ValidationError({"amount": "Amount must be > 0."})

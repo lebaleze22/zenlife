@@ -8,7 +8,11 @@ from .serializers import AccountSerializer, CategorySerializer
 
 class UserOwnedQuerySetMixin:
     def get_queryset(self):
-        return self.queryset.filter(user=self.request.user, deleted_at__isnull=True)
+        qs = self.queryset.filter(user=self.request.user)
+        return self.apply_deleted_filter(qs)
+
+    def get_restore_queryset(self):
+        return self.queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)

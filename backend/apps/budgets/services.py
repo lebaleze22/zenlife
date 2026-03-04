@@ -16,6 +16,15 @@ class BudgetPeriodComputationResult:
     available: Decimal
 
 
+@dataclass
+class BudgetThresholdAlert:
+    code: str
+    threshold_percent: int
+    usage_percent: Decimal
+    level: str
+    message: str
+
+
 class BudgetPeriodComputationService:
     @staticmethod
     def compute(period: BudgetPeriod) -> BudgetPeriodComputationResult:
@@ -43,6 +52,39 @@ class BudgetPeriodComputationService:
             recorded_income=recorded_income,
             available=available,
         )
+
+    @staticmethod
+    def evaluate_threshold_alerts(period: BudgetPeriod, result: BudgetPeriodComputationResult) -> list[BudgetThresholdAlert]:
+        envelope = period.planned_amount if period.planned_amount > 0 else result.planned_expense
+        if envelope <= 0:
+            return []
+
+        usage_amount = result.recorded_expense + period.reserved_amount
+        usage_percent = (usage_amount / envelope) * Decimal("100")
+        alerts: list[BudgetThresholdAlert] = []
+
+        if usage_percent >= Decimal("100"):
+            alerts.append(
+                BudgetThresholdAlert(
+                    code="BUDGET_USAGE_100",
+                    threshold_percent=100,
+                    usage_percent=usage_percent.quantize(Decimal("0.01")),
+                    level="critical",
+                    message="Budget usage reached or exceeded 100%.",
+                )
+            )
+        elif usage_percent >= Decimal("80"):
+            alerts.append(
+                BudgetThresholdAlert(
+                    code="BUDGET_USAGE_80",
+                    threshold_percent=80,
+                    usage_percent=usage_percent.quantize(Decimal("0.01")),
+                    level="warning",
+                    message="Budget usage reached or exceeded 80%.",
+                )
+            )
+
+        return alerts
 
     @staticmethod
     def apply_to_period(period: BudgetPeriod) -> BudgetPeriodComputationResult:

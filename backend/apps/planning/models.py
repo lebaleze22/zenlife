@@ -133,3 +133,28 @@ class ToBuyReservation(models.Model):
     def save(self, *args, **kwargs):
         self.clean()
         super().save(*args, **kwargs)
+
+
+class ReservationAuditLog(models.Model):
+    class Action(models.TextChoices):
+        RESERVED = "RESERVED", "Reserved"
+        RELEASED = "RELEASED", "Released"
+        DELETED = "DELETED", "Deleted"
+        CONSUMED = "CONSUMED", "Consumed"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="reservation_audit_logs")
+    reservation = models.ForeignKey("planning.ToBuyReservation", on_delete=models.PROTECT, related_name="audit_logs")
+    to_buy_item = models.ForeignKey("planning.ToBuyItem", on_delete=models.PROTECT, related_name="reservation_audit_logs")
+    budget_period = models.ForeignKey("budgets.BudgetPeriod", on_delete=models.PROTECT, related_name="reservation_audit_logs")
+
+    action = models.CharField(max_length=16, choices=Action.choices)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    note = models.TextField(blank=True)
+    metadata_json = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "action", "created_at"], name="idx_res_audit_user_ac_ct"),
+            models.Index(fields=["reservation", "created_at"], name="idx_res_audit_res_ct"),
+        ]

@@ -23,6 +23,7 @@ class Project(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.NOT_STARTED)
     deadline = models.DateField(null=True, blank=True)
     tasks = models.JSONField(default=list, blank=True)
+    sections = models.JSONField(default=list, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

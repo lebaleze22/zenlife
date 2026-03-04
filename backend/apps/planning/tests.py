@@ -6,7 +6,8 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import Account
 from apps.budgets.models import Budget, BudgetPeriod
-from apps.planning.models import ToBuyItem, ToBuyReservation
+from apps.ledger.models import LedgerEntry
+from apps.planning.models import ReservationAuditLog, ToBuyItem, ToBuyReservation
 
 
 class ReservationApiTests(APITestCase):
@@ -68,6 +69,8 @@ class ReservationApiTests(APITestCase):
         self.period.refresh_from_db()
         self.assertEqual(self.period.reserved_amount, Decimal("25000.00"))
         self.assertEqual(ToBuyReservation.objects.filter(deleted_at__isnull=True).count(), 1)
+        self.assertEqual(ReservationAuditLog.objects.count(), 1)
+        self.assertEqual(ReservationAuditLog.objects.first().action, ReservationAuditLog.Action.RESERVED)
 
     def test_create_reservation_rejects_when_amount_exceeds_available(self):
         response = self.client.post(
@@ -102,6 +105,8 @@ class ReservationApiTests(APITestCase):
         self.period.refresh_from_db()
         self.assertEqual(reservation.status, ToBuyReservation.Status.RELEASED)
         self.assertEqual(self.period.reserved_amount, Decimal("5000.00"))
+        self.assertEqual(ReservationAuditLog.objects.count(), 1)
+        self.assertEqual(ReservationAuditLog.objects.first().action, ReservationAuditLog.Action.RELEASED)
 
     def test_delete_active_reservation_soft_deletes_and_releases_amount(self):
         reservation = ToBuyReservation.objects.create(
@@ -122,3 +127,77 @@ class ReservationApiTests(APITestCase):
         self.assertIsNotNone(reservation.deleted_at)
         self.assertEqual(reservation.status, ToBuyReservation.Status.RELEASED)
         self.assertEqual(self.period.reserved_amount, Decimal("5000.00"))
+        self.assertEqual(ReservationAuditLog.objects.count(), 1)
+        audit = ReservationAuditLog.objects.first()
+        self.assertEqual(audit.action, ReservationAuditLog.Action.DELETED)
+        self.assertEqual(audit.metadata_json.get("was_active_before_delete"), True)
+
+    def test_mark_recorded_creates_recorded_ledger_entry_and_consumes_active_reservation(self):
+        reservation = ToBuyReservation.objects.create(
+            user=self.user,
+            to_buy_item=self.tobuy,
+            budget_period=self.period,
+            amount=Decimal("15000.00"),
+            status=ToBuyReservation.Status.ACTIVE,
+        )
+        self.period.reserved_amount = Decimal("20000.00")
+        self.period.save(update_fields=["reserved_amount"])
+
+        response = self.client.post(
+            f"/api/v1/to-buy-items/{self.tobuy.id}/mark-recorded/",
+            {
+                "account_id": self.account.id,
+                "amount": "14000.00",
+                "entry_date": "2026-03-18",
+                "note": "Manual recorded purchase",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["reservation_consumed"], True)
+
+        self.tobuy.refresh_from_db()
+        reservation.refresh_from_db()
+        self.period.refresh_from_db()
+
+        self.assertEqual(self.tobuy.actual_cost, Decimal("14000.00"))
+        self.assertEqual(self.tobuy.status, ToBuyItem.Status.DELIVERED)
+        self.assertEqual(reservation.status, ToBuyReservation.Status.CONSUMED)
+        self.assertEqual(self.period.reserved_amount, Decimal("5000.00"))
+
+        entries = LedgerEntry.objects.filter(user=self.user, deleted_at__isnull=True)
+        self.assertEqual(entries.count(), 1)
+        self.assertEqual(entries.first().status, LedgerEntry.EntryStatus.RECORDED)
+        self.assertEqual(entries.first().type, LedgerEntry.EntryType.EXPENSE)
+        self.assertEqual(entries.first().amount, Decimal("14000.00"))
+
+        self.assertTrue(
+            ReservationAuditLog.objects.filter(
+                reservation=reservation,
+                action=ReservationAuditLog.Action.CONSUMED,
+            ).exists()
+        )
+
+    def test_mark_recorded_rejects_duplicate_call_for_same_tobuy_item(self):
+        first = self.client.post(
+            f"/api/v1/to-buy-items/{self.tobuy.id}/mark-recorded/",
+            {
+                "account_id": self.account.id,
+                "amount": "10000.00",
+                "entry_date": "2026-03-12",
+            },
+            format="json",
+        )
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+
+        second = self.client.post(
+            f"/api/v1/to-buy-items/{self.tobuy.id}/mark-recorded/",
+            {
+                "account_id": self.account.id,
+                "amount": "10000.00",
+                "entry_date": "2026-03-12",
+            },
+            format="json",
+        )
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(LedgerEntry.objects.filter(user=self.user, deleted_at__isnull=True).count(), 1)

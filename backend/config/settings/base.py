@@ -44,6 +44,9 @@ INSTALLED_APPS = [
     "apps.planning",
     "apps.goals",
     "apps.budgets",
+    "apps.reports",
+    "apps.notifications",
+    "apps.portability",
 ]
 
 MIDDLEWARE = [

@@ -21,7 +21,7 @@ class LedgerEntryViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
     queryset = LedgerEntry.objects.select_related("account", "category").all().order_by("-entry_date", "-created_at")
 
     def get_queryset(self):
-        qs = self.queryset.filter(user=self.request.user, deleted_at__isnull=True)
+        qs = self.queryset.filter(user=self.request.user)
 
         date_from = self.request.query_params.get("from")
         date_to = self.request.query_params.get("to")
@@ -40,7 +40,10 @@ class LedgerEntryViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
         if q:
             qs = qs.filter(Q(note__icontains=q))
 
-        return qs
+        return self.apply_deleted_filter(qs)
+
+    def get_restore_queryset(self):
+        return self.queryset.filter(user=self.request.user)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
