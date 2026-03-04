@@ -18,3 +18,34 @@ View your app in AI Studio: https://ai.studio/apps/drive/1c2SIEzm-ARhW_skmHU-83a
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## Run with Docker
+
+This project is dockerized with:
+- `db`: PostgreSQL 16
+- `backend`: Django + Gunicorn
+- `frontend`: Vite build served by Nginx
+
+### Start all services
+
+```bash
+docker compose up --build
+```
+
+### Endpoints
+
+- Frontend: `http://localhost:3000`
+- Backend API: `http://localhost:8000/api/v1`
+- PostgreSQL: `localhost:5432`
+
+### Stop services
+
+```bash
+docker compose down
+```
+
+### Reset database volume
+
+```bash
+docker compose down -v
+```

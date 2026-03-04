@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+frontend.err.log
+frontend.out.log
+backend/__pycache__
+backend/**/__pycache__
+backend/*.sqlite3
+backend/.env
+**/*.pyc
+**/.pytest_cache
