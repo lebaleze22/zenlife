@@ -26,6 +26,12 @@ export interface Task {
   status: Status;
 }
 
+export interface ProjectSection {
+  id: string;
+  name: string;
+  checklist: Task[];
+}
+
 export interface Goal {
   id: string;
   title: string;
@@ -48,6 +54,7 @@ export interface Project {
   priority: Priority;
   deadline: string;
   tasks: Task[];
+  sections?: ProjectSection[];
   createdAt: number;
   completedAt?: number;
 }

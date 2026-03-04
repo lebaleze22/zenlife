@@ -36,6 +36,46 @@ const isApiEnvelope = (value: unknown): value is ApiErrorEnvelope => {
   return typeof maybe.error === 'object' && maybe.error !== null;
 };
 
+const extractGenericApiError = (payload: unknown): { message: string; details?: ApiErrorDetail[] } | null => {
+  if (typeof payload === 'string' && payload.trim()) {
+    return { message: payload.trim() };
+  }
+
+  if (!payload || typeof payload !== 'object') return null;
+
+  if (Array.isArray(payload)) {
+    const first = payload.find((x) => typeof x === 'string') as string | undefined;
+    return first ? { message: first } : null;
+  }
+
+  const obj = payload as Record<string, unknown>;
+  const details: ApiErrorDetail[] = [];
+
+  for (const [field, value] of Object.entries(obj)) {
+    if (typeof value === 'string') {
+      details.push({ field, issue: value });
+      continue;
+    }
+    if (Array.isArray(value) && value.length > 0) {
+      const first = value.find((v) => typeof v === 'string') as string | undefined;
+      if (first) details.push({ field, issue: first });
+    }
+  }
+
+  if (details.length > 0) {
+    const first = details[0];
+    const prefix = first.field && first.field !== 'detail' && first.field !== 'non_field_errors' ? `${first.field}: ` : '';
+    return { message: `${prefix}${first.issue || 'Request failed'}`, details };
+  }
+
+  const detail = obj.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return { message: detail.trim() };
+  }
+
+  return null;
+};
+
 const toApiClientError = (status: number, payload: unknown): ApiClientError => {
   if (isApiEnvelope(payload)) {
     const err = payload.error;
@@ -44,6 +84,11 @@ const toApiClientError = (status: number, payload: unknown): ApiClientError => {
     const details = Array.isArray(err.details) ? (err.details as ApiErrorDetail[]) : undefined;
     const requestId = typeof err.request_id === 'string' ? err.request_id : undefined;
     return new ApiClientError(message, code, status, details, requestId);
+  }
+
+  const generic = extractGenericApiError(payload);
+  if (generic) {
+    return new ApiClientError(generic.message, 'HTTP_ERROR', status, generic.details);
   }
 
   return new ApiClientError('Request failed', 'HTTP_ERROR', status);

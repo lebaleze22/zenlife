@@ -1,4 +1,4 @@
-ï»¿import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../AppContext';
 import { translations } from '../i18n';
 import {
@@ -11,6 +11,16 @@ import {
 } from 'recharts';
 import { TrendingUp, Target, Briefcase, Banknote, Eye, EyeOff, Landmark, PiggyBank } from 'lucide-react';
 import { Status, BudgetType } from '../types';
+import { listGoals, type GoalDto } from '../data/api/goals';
+import { listProjects, type ProjectDto } from '../data/api/projects';
+import { getCashflowReport, getNetWorthReport, getPlannedVsRecordedReport, type CashflowReportDto, type NetWorthReportDto, type PlannedVsRecordedReportDto } from '../data/api/reports';
+
+const toNumber = (value: string | number | null | undefined): number => {
+  if (typeof value === 'number') return value;
+  if (!value) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 
 const Dashboard: React.FC = () => {
   const { goals, projects, budget, language, theme } = useApp();
@@ -21,10 +31,59 @@ const Dashboard: React.FC = () => {
     loanBalance: true,
     totalSavings: true,
   });
+  const [remoteGoals, setRemoteGoals] = useState<GoalDto[] | null>(null);
+  const [remoteProjects, setRemoteProjects] = useState<ProjectDto[] | null>(null);
+  const [cashflow, setCashflow] = useState<CashflowReportDto | null>(null);
+  const [netWorth, setNetWorth] = useState<NetWorthReportDto | null>(null);
+  const [plannedVsRecorded, setPlannedVsRecorded] = useState<PlannedVsRecordedReportDto | null>(null);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
 
   const toggleVisibility = (field: keyof typeof visibleBalances) => {
     setVisibleBalances((prev) => ({ ...prev, [field]: !prev[field] }));
   };
+
+  const hasToken = !!localStorage.getItem('zenlife_access_token');
+
+  useEffect(() => {
+    if (!hasToken) {
+      setRemoteGoals(null);
+      setRemoteProjects(null);
+      setCashflow(null);
+      setNetWorth(null);
+      setPlannedVsRecorded(null);
+      setDashboardError(null);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        const [goalsResp, projectsResp, cashflowResp, netWorthResp, pvrResp] = await Promise.all([
+          listGoals(),
+          listProjects(),
+          getCashflowReport(),
+          getNetWorthReport(),
+          getPlannedVsRecordedReport(),
+        ]);
+        setRemoteGoals(goalsResp.results);
+        setRemoteProjects(projectsResp.results);
+        setCashflow(cashflowResp);
+        setNetWorth(netWorthResp);
+        setPlannedVsRecorded(pvrResp);
+        setDashboardError(null);
+      } catch {
+        setDashboardError('Backend dashboard reports unavailable, showing local data.');
+      }
+    };
+
+    load();
+  }, [hasToken]);
+
+  const sourceGoals = remoteGoals
+    ? remoteGoals.map((g) => ({ title: g.title, status: g.status as Status, progress: g.progress, targetAmount: toNumber(g.target_amount), savedAmount: toNumber(g.saved_amount) }))
+    : goals;
+  const sourceProjects = remoteProjects
+    ? remoteProjects.map((p) => ({ status: p.status as Status, name: p.name }))
+    : projects;
 
   const calculateLoanInstalment = (principal: number, annualRate: number, durationMonths: number) => {
     if (!principal || !durationMonths) return 0;
@@ -35,6 +94,39 @@ const Dashboard: React.FC = () => {
   };
 
   const stats = useMemo(() => {
+    const completedGoals = sourceGoals.filter((g) => g.status === Status.COMPLETED || g.progress >= 100).length;
+    const totalGoals = sourceGoals.length;
+    const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
+    const goalsTarget = sourceGoals.reduce((sum, g) => sum + (g.targetAmount || 0), 0);
+    const goalsSaved = sourceGoals.reduce((sum, g) => sum + (g.savedAmount || 0), 0);
+    const goalsFundingRate = goalsTarget > 0 ? Math.round((goalsSaved / goalsTarget) * 100) : 0;
+    const activeProjects = sourceProjects.filter((p) => p.status === Status.IN_PROGRESS).length;
+
+    if (cashflow && netWorth && plannedVsRecorded) {
+      const totalIncome = toNumber(cashflow.income);
+      const totalExpense = toNumber(cashflow.expense);
+      const net = toNumber(cashflow.net);
+      const liabilities = toNumber(netWorth.liabilities);
+      const reserved = toNumber(plannedVsRecorded.budget_periods.reserved);
+      const savingsIncomeRatio = totalIncome > 0 ? Math.round((Math.max(0, net) / totalIncome) * 100) : 0;
+      return {
+        balance: net,
+        loanCapitalBalance: liabilities,
+        income: totalIncome,
+        expenses: totalExpense,
+        totalSavings: Math.max(0, net),
+        activeProjects,
+        completionRate,
+        totalGoals,
+        goalsTarget,
+        goalsSaved,
+        goalsFundingRate,
+        loanRepaymentRate: 0,
+        savingsIncomeRatio,
+        reserved,
+      };
+    }
+
     const incomes = budget.filter((item) => item.type === BudgetType.INCOME);
     const expensesFromIncome = budget.filter((item) => item.type === BudgetType.EXPENSE && !item.sourceLoanId);
     const savings = budget.filter((item) => item.type === BudgetType.SAVINGS);
@@ -50,25 +142,7 @@ const Dashboard: React.FC = () => {
     }, 0);
 
     const loanCapitalBalance = loans.reduce((sum, item) => sum + (item.amount - (item.usedAmount || 0)), 0);
-
-    const loanTotalToPay = loans.reduce((sum, item) => {
-      const duration = item.loanDurationMonths || 12;
-      const monthly = calculateLoanInstalment(item.amount, item.interestRate || 0, duration);
-      return sum + (monthly * duration);
-    }, 0);
-    const loanPaid = loans.reduce((sum, item) => sum + (item.paidAmount || 0), 0);
-    const loanRepaymentRate = loanTotalToPay > 0 ? Math.round((loanPaid / loanTotalToPay) * 100) : 0;
     const savingsIncomeRatio = totalIncome > 0 ? Math.round((totalSavings / totalIncome) * 100) : 0;
-
-    const completedGoals = goals.filter((g) => g.status === Status.COMPLETED || g.progress >= 100).length;
-    const totalGoals = goals.length;
-    const completionRate = totalGoals > 0 ? Math.round((completedGoals / totalGoals) * 100) : 0;
-
-    const goalsTarget = goals.reduce((sum, g) => sum + (g.targetAmount || 0), 0);
-    const goalsSaved = goals.reduce((sum, g) => sum + (g.savedAmount || 0), 0);
-    const goalsFundingRate = goalsTarget > 0 ? Math.round((goalsSaved / goalsTarget) * 100) : 0;
-
-    const activeProjects = projects.filter((p) => p.status === Status.IN_PROGRESS).length;
 
     return {
       balance: totalIncome - totalExpensesFromIncome - totalLoanInstalments - totalSavings,
@@ -82,20 +156,33 @@ const Dashboard: React.FC = () => {
       goalsTarget,
       goalsSaved,
       goalsFundingRate,
-      loanRepaymentRate,
+      loanRepaymentRate: 0,
       savingsIncomeRatio,
+      reserved: 0,
     };
-  }, [budget, projects, goals]);
+  }, [budget, sourceProjects, sourceGoals, cashflow, netWorth, plannedVsRecorded]);
 
   const projectStatusData = useMemo(() => {
     const statuses = [Status.NOT_STARTED, Status.IN_PROGRESS, Status.COMPLETED, Status.ON_HOLD];
     return statuses.map((s) => ({
       name: t[s.toLowerCase() as keyof typeof t] || s,
-      value: projects.filter((p) => p.status === s).length,
+      value: sourceProjects.filter((p) => p.status === s).length,
     }));
-  }, [projects, t]);
+  }, [sourceProjects, t]);
 
   const budgetTrendData = useMemo(() => {
+    if (cashflow) {
+      return cashflow.monthly.map((m) => {
+        const d = new Date(`${m.month}-01T00:00:00`);
+        return {
+          name: d.toLocaleDateString(language === 'en' ? 'en-US' : 'fr-FR', { month: 'short' }),
+          income: toNumber(m.income),
+          expense: toNumber(m.expense),
+          savings: Math.max(0, toNumber(m.net)),
+        };
+      });
+    }
+
     const now = new Date();
     const monthKeys: string[] = [];
     for (let i = 5; i >= 0; i -= 1) {
@@ -103,14 +190,7 @@ const Dashboard: React.FC = () => {
       monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
     }
 
-    const initial = monthKeys.map((key) => ({
-      key,
-      name: key,
-      income: 0,
-      expense: 0,
-      savings: 0,
-    }));
-
+    const initial = monthKeys.map((key) => ({ key, name: key, income: 0, expense: 0, savings: 0 }));
     const map = new Map(initial.map((m) => [m.key, m]));
 
     budget.forEach((item) => {
@@ -119,7 +199,6 @@ const Dashboard: React.FC = () => {
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       const bucket = map.get(key);
       if (!bucket) return;
-
       if (item.type === BudgetType.INCOME) bucket.income += item.amount;
       if (item.type === BudgetType.EXPENSE && !item.sourceLoanId) bucket.expense += item.amount;
       if (item.type === BudgetType.SAVINGS) bucket.savings += item.amount;
@@ -130,14 +209,14 @@ const Dashboard: React.FC = () => {
       const label = d.toLocaleDateString(language === 'en' ? 'en-US' : 'fr-FR', { month: 'short' });
       return { ...m, name: label };
     });
-  }, [budget, language]);
+  }, [budget, language, cashflow]);
 
   const goalProgressData = useMemo(() => {
-    return [...goals]
+    return [...sourceGoals]
       .sort((a, b) => b.progress - a.progress)
       .slice(0, 6)
       .map((g) => ({ name: g.title.slice(0, 12), progress: g.progress }));
-  }, [goals]);
+  }, [sourceGoals]);
 
   const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
 
@@ -147,6 +226,7 @@ const Dashboard: React.FC = () => {
         <div>
           <h2 className="text-3xl font-extrabold tracking-tight">{t.dashboard}</h2>
           <p className="text-gray-500">Real-time planning overview from your current data.</p>
+          {dashboardError && <p className="text-xs text-rose-500 mt-1">{dashboardError}</p>}
         </div>
       </div>
 
@@ -155,7 +235,7 @@ const Dashboard: React.FC = () => {
         <StatCard label={t.activeProjects} value={stats.activeProjects.toString()} icon={<Briefcase className="text-emerald-500" />} trend="In Progress" theme={theme} />
         <StatCard
           label={t.netBalance}
-          value={visibleBalances.netBalance ? `${stats.balance.toLocaleString()} FCFA` : 'â€¢â€¢â€¢â€¢â€¢â€¢ FCFA'}
+          value={visibleBalances.netBalance ? `${stats.balance.toLocaleString()} FCFA` : '•••••• FCFA'}
           icon={<Banknote className="text-amber-500" />}
           trend={stats.balance >= 0 ? 'Healthy' : 'Deficit'}
           theme={theme}
@@ -165,17 +245,17 @@ const Dashboard: React.FC = () => {
         />
         <StatCard
           label={t.loanBalance}
-          value={visibleBalances.loanBalance ? `${stats.loanCapitalBalance.toLocaleString()} FCFA` : 'â€¢â€¢â€¢â€¢â€¢â€¢ FCFA'}
+          value={visibleBalances.loanBalance ? `${stats.loanCapitalBalance.toLocaleString()} FCFA` : '•••••• FCFA'}
           icon={<Landmark className="text-orange-500" />}
-          trend={`Repayment ${stats.loanRepaymentRate}%`}
+          trend="Liabilities"
           theme={theme}
           isTogglable
           isVisible={visibleBalances.loanBalance}
           onToggle={() => toggleVisibility('loanBalance')}
         />
         <StatCard
-          label="Total Saved"
-          value={visibleBalances.totalSavings ? `${stats.totalSavings.toLocaleString()} FCFA` : 'â€¢â€¢â€¢â€¢â€¢â€¢ FCFA'}
+          label="Reserved"
+          value={visibleBalances.totalSavings ? `${stats.reserved.toLocaleString()} FCFA` : '•••••• FCFA'}
           icon={<PiggyBank className="text-pink-500" />}
           trend={`Goals funded ${stats.goalsFundingRate}%`}
           theme={theme}
@@ -275,4 +355,3 @@ const StatCard: React.FC<StatCardProps> = ({ label, value, icon, trend, theme, i
 );
 
 export default Dashboard;
-

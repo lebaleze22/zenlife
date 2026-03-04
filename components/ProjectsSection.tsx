@@ -2,9 +2,56 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../AppContext';
 import { translations } from '../i18n';
 import { Plus, Trash2, Edit3, CheckCircle, Clock, ListTodo, Circle, PlayCircle } from 'lucide-react';
-import { Project, Priority, Status, Task } from '../types';
-import { createProject, deleteProject, listProjects, updateProject, type CreateProjectInput, type ProjectDto } from '../data/api/projects';
-import { deleteToBuyItem, deleteTodo, listToBuyItems, listTodos, updateToBuyItem, updateTodo, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
+import { Project, Priority, Status, Task, type ProjectSection } from '../types';
+import { createProject, deleteProject, listProjects, updateProject, type CreateProjectInput, type ProjectDto, type ProjectSectionDto, type ProjectStatus, type ProjectTaskDto } from '../data/api/projects';
+import { deleteToBuyItem, deleteTodo, listToBuyItems, listTodos, markToBuyRecorded, updateToBuyItem, updateTodo, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
+
+const normalizeProjectStatus = (status: unknown): Status => {
+  if (status === Status.IN_PROGRESS) return Status.IN_PROGRESS;
+  if (status === Status.COMPLETED) return Status.COMPLETED;
+  if (status === Status.ON_HOLD) return Status.ON_HOLD;
+  return Status.NOT_STARTED;
+};
+
+const normalizeTask = (task: unknown): Task | null => {
+  if (!task || typeof task !== 'object') return null;
+  const input = task as { id?: unknown; title?: unknown; status?: unknown };
+  const title = typeof input.title === 'string' ? input.title.trim() : '';
+  if (!title) return null;
+  return {
+    id: String(input.id ?? Date.now()),
+    title,
+    status: normalizeProjectStatus(input.status),
+  };
+};
+
+const normalizeSection = (section: unknown): ProjectSection | null => {
+  if (!section || typeof section !== 'object') return null;
+  const input = section as { id?: unknown; name?: unknown; checklist?: unknown };
+  const name = typeof input.name === 'string' ? input.name.trim() : '';
+  if (!name) return null;
+  const checklistRaw = Array.isArray(input.checklist) ? input.checklist : [];
+  const checklist = checklistRaw.map(normalizeTask).filter((task): task is Task => !!task);
+  return {
+    id: String(input.id ?? Date.now()),
+    name,
+    checklist,
+  };
+};
+
+const normalizeSections = (dto: ProjectDto): ProjectSection[] => {
+  const fromSections = Array.isArray(dto.sections)
+    ? dto.sections.map(normalizeSection).filter((section): section is ProjectSection => !!section)
+    : [];
+  if (fromSections.length > 0) return fromSections;
+  const fallbackTasks = Array.isArray(dto.tasks)
+    ? dto.tasks.map(normalizeTask).filter((task): task is Task => !!task)
+    : [];
+  if (fallbackTasks.length === 0) return [];
+  return [{ id: 'legacy-general', name: 'General', checklist: fallbackTasks }];
+};
+
+const toApiTaskStatus = (status: Status): ProjectStatus => status as unknown as ProjectStatus;
 
 const mapDtoToProject = (dto: ProjectDto): Project => ({
   id: String(dto.id),
@@ -14,7 +61,8 @@ const mapDtoToProject = (dto: ProjectDto): Project => ({
   status: dto.status as Status,
   priority: dto.priority as Priority,
   deadline: dto.deadline || '',
-  tasks: Array.isArray(dto.tasks) ? dto.tasks.map((t) => ({ id: String(t.id), title: t.title, status: t.status as Status })) : [],
+  tasks: Array.isArray(dto.tasks) ? dto.tasks.map((t) => ({ id: String(t.id), title: t.title, status: normalizeProjectStatus(t.status) })) : [],
+  sections: normalizeSections(dto),
 });
 
 const toPayload = (p: Partial<Project>): CreateProjectInput => ({
@@ -23,7 +71,16 @@ const toPayload = (p: Partial<Project>): CreateProjectInput => ({
   status: (p.status || Status.NOT_STARTED) as CreateProjectInput['status'],
   priority: (p.priority || Priority.MEDIUM) as CreateProjectInput['priority'],
   deadline: p.deadline || null,
-  tasks: (p.tasks || []).map((t) => ({ id: String(t.id), title: t.title, status: t.status as CreateProjectInput['status'] })),
+  tasks: (p.tasks || []).map((t) => ({ id: String(t.id), title: t.title, status: toApiTaskStatus(t.status) as ProjectTaskDto['status'] })),
+  sections: (p.sections || []).map((section) => ({
+    id: String(section.id),
+    name: section.name,
+    checklist: (section.checklist || []).map((task) => ({
+      id: String(task.id),
+      title: task.title,
+      status: toApiTaskStatus(task.status) as ProjectSectionDto['checklist'][number]['status'],
+    })),
+  })),
 });
 
 const ProjectsSection: React.FC = () => {
@@ -38,6 +95,7 @@ const ProjectsSection: React.FC = () => {
   const [apiError, setApiError] = useState<string | null>(null);
   const [linkedToBuyByProject, setLinkedToBuyByProject] = useState<Record<number, ToBuyItemDto[]>>({});
   const [linkedTodoByProject, setLinkedTodoByProject] = useState<Record<number, TodoItemDto[]>>({});
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   const [formData, setFormData] = useState<Partial<Project>>({
     name: '',
@@ -46,6 +104,7 @@ const ProjectsSection: React.FC = () => {
     status: Status.NOT_STARTED,
     deadline: '',
     tasks: [],
+    sections: [],
   });
 
   const fetchProjects = async () => {
@@ -94,7 +153,7 @@ const ProjectsSection: React.FC = () => {
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProject(null);
-    setFormData({ name: '', description: '', priority: Priority.MEDIUM, status: Status.NOT_STARTED, deadline: '', tasks: [] });
+    setFormData({ name: '', description: '', priority: Priority.MEDIUM, status: Status.NOT_STARTED, deadline: '', tasks: [], sections: [] });
     setNewTaskTitle('');
   };
 
@@ -140,6 +199,7 @@ const ProjectsSection: React.FC = () => {
         priority: formData.priority || Priority.MEDIUM,
         deadline: formData.deadline || new Date().toISOString().split('T')[0],
         tasks: formData.tasks || [],
+        sections: formData.sections || [],
       };
       setProjects((prev) => [newProject, ...prev]);
     }
@@ -252,6 +312,31 @@ const ProjectsSection: React.FC = () => {
     }
   };
 
+  const handleMarkRecordedToBuy = async (item: ToBuyItemDto) => {
+    const suggested = item.actual_cost || item.estimated_cost || '';
+    const value = prompt(`Recorded amount for "${item.name}"`, suggested || '');
+    if (value === null) return;
+    const amount = value.trim().replace(',', '.');
+    if (!amount || Number.isNaN(Number(amount)) || Number(amount) <= 0) {
+      setApiError('Invalid recorded amount.');
+      return;
+    }
+    try {
+      setSyncing(true);
+      await markToBuyRecorded(item.id, {
+        amount,
+        entry_date: new Date().toISOString().split('T')[0],
+        note: 'Marked recorded from Projects UI',
+      });
+      await fetchProjects();
+      setApiError(null);
+    } catch {
+      setApiError('Failed to mark ToBuy item as recorded.');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const cycleTaskStatus = (taskId: string) => {
     const statusOrder = [Status.NOT_STARTED, Status.IN_PROGRESS, Status.COMPLETED];
     setFormData((prev) => ({
@@ -265,6 +350,90 @@ const ProjectsSection: React.FC = () => {
         return task;
       }),
     }));
+  };
+
+  const selectedProject = selectedProjectId ? projects.find((project) => project.id === selectedProjectId) || null : null;
+
+  const updateProjectSections = async (projectId: string, sections: ProjectSection[]) => {
+    const token = localStorage.getItem('zenlife_access_token');
+    if (token) {
+      try {
+        setSyncing(true);
+        await updateProject(Number(projectId), { sections });
+        await fetchProjects();
+        return;
+      } catch {
+        setApiError('Failed to save project sections to backend.');
+      } finally {
+        setSyncing(false);
+      }
+    }
+    setProjects((prev) => prev.map((project) => (project.id === projectId ? { ...project, sections } : project)));
+  };
+
+  const handleAddSection = async () => {
+    if (!selectedProject) return;
+    const sectionName = prompt('Section/room name');
+    if (!sectionName || !sectionName.trim()) return;
+    const nextSections = [...(selectedProject.sections || []), { id: Date.now().toString(), name: sectionName.trim(), checklist: [] }];
+    await updateProjectSections(selectedProject.id, nextSections);
+  };
+
+  const handleRenameSection = async (sectionId: string) => {
+    if (!selectedProject) return;
+    const section = (selectedProject.sections || []).find((entry) => entry.id === sectionId);
+    if (!section) return;
+    const nextName = prompt('Rename section', section.name);
+    if (!nextName || !nextName.trim() || nextName.trim() === section.name) return;
+    const nextSections = (selectedProject.sections || []).map((entry) => (entry.id === sectionId ? { ...entry, name: nextName.trim() } : entry));
+    await updateProjectSections(selectedProject.id, nextSections);
+  };
+
+  const handleDeleteSection = async (sectionId: string) => {
+    if (!selectedProject) return;
+    if (!confirm('Delete this section and all checklist items?')) return;
+    const nextSections = (selectedProject.sections || []).filter((entry) => entry.id !== sectionId);
+    await updateProjectSections(selectedProject.id, nextSections);
+  };
+
+  const handleAddChecklistItem = async (sectionId: string) => {
+    if (!selectedProject) return;
+    const title = prompt('Checklist item');
+    if (!title || !title.trim()) return;
+    const nextSections = (selectedProject.sections || []).map((entry) =>
+      entry.id === sectionId
+        ? {
+            ...entry,
+            checklist: [...(entry.checklist || []), { id: Date.now().toString(), title: title.trim(), status: Status.NOT_STARTED }],
+          }
+        : entry
+    );
+    await updateProjectSections(selectedProject.id, nextSections);
+  };
+
+  const handleCycleChecklistItemStatus = async (sectionId: string, itemId: string) => {
+    if (!selectedProject) return;
+    const statusOrder = [Status.NOT_STARTED, Status.IN_PROGRESS, Status.COMPLETED];
+    const nextSections = (selectedProject.sections || []).map((entry) => {
+      if (entry.id !== sectionId) return entry;
+      return {
+        ...entry,
+        checklist: entry.checklist.map((item) => {
+          if (item.id !== itemId) return item;
+          const idx = statusOrder.indexOf(item.status);
+          return { ...item, status: statusOrder[(idx + 1) % statusOrder.length] };
+        }),
+      };
+    });
+    await updateProjectSections(selectedProject.id, nextSections);
+  };
+
+  const handleDeleteChecklistItem = async (sectionId: string, itemId: string) => {
+    if (!selectedProject) return;
+    const nextSections = (selectedProject.sections || []).map((entry) =>
+      entry.id === sectionId ? { ...entry, checklist: entry.checklist.filter((item) => item.id !== itemId) } : entry
+    );
+    await updateProjectSections(selectedProject.id, nextSections);
   };
 
   const getTaskIcon = (status: Status) => {
@@ -327,10 +496,14 @@ const ProjectsSection: React.FC = () => {
           const projectIdNum = Number(project.id);
           const linkedTodos = Number.isFinite(projectIdNum) ? (linkedTodoByProject[projectIdNum] || []) : [];
           const linkedToBuy = Number.isFinite(projectIdNum) ? (linkedToBuyByProject[projectIdNum] || []) : [];
+          const linkedPlannedCost = linkedToBuy.reduce((sum, item) => sum + Number(item.estimated_cost || 0), 0);
+          const linkedRecordedCost = linkedToBuy.reduce((sum, item) => sum + Number(item.actual_cost || 0), 0);
+          const linkedVariance = linkedPlannedCost - linkedRecordedCost;
 
-          const internalCompleted = project.tasks.filter((pt) => pt.status === Status.COMPLETED).length;
-          const internalInProgress = project.tasks.filter((pt) => pt.status === Status.IN_PROGRESS).length;
-          const internalNotStarted = project.tasks.filter((pt) => pt.status === Status.NOT_STARTED).length;
+          const internalChecklist = project.sections && project.sections.length > 0 ? project.sections.flatMap((section) => section.checklist || []) : project.tasks;
+          const internalCompleted = internalChecklist.filter((pt) => pt.status === Status.COMPLETED).length;
+          const internalInProgress = internalChecklist.filter((pt) => pt.status === Status.IN_PROGRESS).length;
+          const internalNotStarted = internalChecklist.filter((pt) => pt.status === Status.NOT_STARTED).length;
 
           const todoCompleted = linkedTodos.filter((it) => it.status === 'DONE').length;
           const todoInProgress = linkedTodos.filter((it) => it.status === 'IN_PROGRESS').length;
@@ -343,12 +516,12 @@ const ProjectsSection: React.FC = () => {
           const completedTasks = internalCompleted + todoCompleted + toBuyCompleted;
           const inProgressTasks = internalInProgress + todoInProgress + toBuyInProgress;
           const notStartedTasks = internalNotStarted + todoNotStarted + toBuyNotStarted;
-          const totalTasks = project.tasks.length + linkedTodos.length + linkedToBuy.length;
+          const totalTasks = internalChecklist.length + linkedTodos.length + linkedToBuy.length;
           const taskProgress = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
 
           return (
             <div key={project.id} className={`p-6 rounded-2xl shadow-sm border transition-all hover:shadow-md ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>
-              <div className="flex justify-between items-start mb-4">
+                <div className="flex justify-between items-start mb-4">
                 <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${getStatusBadgeStyle(project.status)}`}>
                   {t[project.status.toLowerCase() as keyof typeof t]}
                 </span>
@@ -393,6 +566,30 @@ const ProjectsSection: React.FC = () => {
                   </div>
                 </div>
 
+                <div className="text-xs grid grid-cols-3 gap-2">
+                  <div className={`p-2 rounded-lg ${theme === 'dark' ? 'bg-slate-700/60' : 'bg-gray-50'}`}>
+                    <div className="text-gray-500">Planned Cost</div>
+                    <div className="font-semibold">{linkedPlannedCost.toFixed(2)}</div>
+                  </div>
+                  <div className={`p-2 rounded-lg ${theme === 'dark' ? 'bg-slate-700/60' : 'bg-gray-50'}`}>
+                    <div className="text-gray-500">Recorded Cost</div>
+                    <div className="font-semibold">{linkedRecordedCost.toFixed(2)}</div>
+                  </div>
+                  <div className={`p-2 rounded-lg ${theme === 'dark' ? 'bg-slate-700/60' : 'bg-gray-50'}`}>
+                    <div className="text-gray-500">Variance</div>
+                    <div className={`font-semibold ${linkedVariance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{linkedVariance.toFixed(2)}</div>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-gray-100 dark:border-slate-700">
+                  <button
+                    onClick={() => setSelectedProjectId((current) => (current === project.id ? null : project.id))}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700"
+                  >
+                    {selectedProjectId === project.id ? 'Hide details' : 'Project details'}
+                  </button>
+                </div>
+
                 <div className="pt-3 border-t border-gray-100 dark:border-slate-700 space-y-2">
                   <p className="text-xs font-semibold text-gray-500">
                     Linked planning items: {linkedTodos.length} Todos, {linkedToBuy.length} ToBuy
@@ -433,6 +630,12 @@ const ProjectsSection: React.FC = () => {
                             <option value="RETURNED">RETURNED</option>
                           </select>
                           <button onClick={() => handleEditLinkedToBuyName(it)} className="px-2 py-1 rounded border border-gray-200 dark:border-slate-600">Edit</button>
+                          <button
+                            onClick={() => handleMarkRecordedToBuy(it)}
+                            className="px-2 py-1 rounded border border-emerald-200 text-emerald-700"
+                          >
+                            Mark Recorded
+                          </button>
                           <button onClick={() => handleDeleteLinkedToBuy(it.id)} className="px-2 py-1 rounded border border-rose-200 text-rose-600">Delete</button>
                         </div>
                       ))}
@@ -446,6 +649,87 @@ const ProjectsSection: React.FC = () => {
           );
         })}
       </div>
+
+      {selectedProject && (
+        <div className={`p-6 rounded-2xl border shadow-sm space-y-4 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-bold">Project detail: {selectedProject.name}</h3>
+              <p className="text-sm text-gray-500">Sections/rooms and checklist</p>
+            </div>
+            <button
+              onClick={handleAddSection}
+              disabled={syncing}
+              className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-60"
+            >
+              Add section
+            </button>
+          </div>
+
+          {(selectedProject.sections || []).length === 0 ? (
+            <div className="text-sm text-gray-500 border border-dashed border-gray-300 dark:border-slate-600 rounded-xl p-4">
+              No sections yet. Add your first room/section to start the checklist.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {(selectedProject.sections || []).map((section) => (
+                <div key={section.id} className={`rounded-xl border p-4 space-y-3 ${theme === 'dark' ? 'border-slate-600 bg-slate-700/30' : 'border-gray-200 bg-gray-50'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="font-semibold">{section.name}</h4>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleRenameSection(section.id)}
+                        disabled={syncing}
+                        className="px-2 py-1 rounded border border-gray-300 dark:border-slate-500 text-xs"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSection(section.id)}
+                        disabled={syncing}
+                        className="px-2 py-1 rounded border border-rose-300 text-rose-600 text-xs"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    {(section.checklist || []).map((item) => (
+                      <div key={item.id} className={`flex items-center gap-2 rounded-lg border p-2 ${theme === 'dark' ? 'border-slate-600 bg-slate-700' : 'border-gray-200 bg-white'}`}>
+                        <button onClick={() => handleCycleChecklistItemStatus(section.id, item.id)} className="flex-shrink-0" title="Cycle status">
+                          {getTaskIcon(item.status)}
+                        </button>
+                        <span className={`flex-1 text-sm ${item.status === Status.COMPLETED ? 'line-through text-gray-400' : ''}`}>
+                          {item.title}
+                        </span>
+                        <button
+                          onClick={() => handleDeleteChecklistItem(section.id, item.id)}
+                          disabled={syncing}
+                          className="text-rose-600 text-xs px-2 py-1 rounded border border-rose-200"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    ))}
+                    {(section.checklist || []).length === 0 && (
+                      <p className="text-xs text-gray-500">No checklist item yet.</p>
+                    )}
+                  </div>
+
+                  <button
+                    onClick={() => handleAddChecklistItem(section.id)}
+                    disabled={syncing}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-60"
+                  >
+                    Add checklist item
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">

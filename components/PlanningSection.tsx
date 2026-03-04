@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../AppContext';
 import { translations } from '../i18n';
 import { Boxes, CheckSquare, Edit3, RefreshCw, Save, Trash2, X } from 'lucide-react';
-import { createToBuyItem, createTodo, deleteToBuyItem, deleteTodo, listCategories, listToBuyItems, listTodos, updateToBuyItem, updateTodo, type CategoryDto, type PlanningPriority, type ToBuyStatus, type TodoStatus, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
+import { createReservation, createToBuyItem, createTodo, deleteToBuyItem, deleteTodo, listCategories, listReservations, listToBuyItems, listTodos, releaseReservation, updateToBuyItem, updateTodo, type CategoryDto, type PlanningPriority, type ToBuyReservationDto, type ToBuyStatus, type TodoStatus, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
+import { listBudgetPeriods, type BudgetPeriodDto } from '../data/api/budgets';
 import { listProjects } from '../data/api/projects';
 
 interface ProjectOption {
@@ -50,6 +51,9 @@ const PlanningSection: React.FC = () => {
   const [categories, setCategories] = useState<CategoryDto[]>([]);
   const [toBuyItems, setToBuyItems] = useState<ToBuyItemDto[]>([]);
   const [todoItems, setTodoItems] = useState<TodoItemDto[]>([]);
+  const [budgetPeriods, setBudgetPeriods] = useState<BudgetPeriodDto[]>([]);
+  const [reservations, setReservations] = useState<ToBuyReservationDto[]>([]);
+  const [selectedReservePeriodId, setSelectedReservePeriodId] = useState('');
   const [editingToBuyId, setEditingToBuyId] = useState<number | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
   const [toBuyEditForm, setToBuyEditForm] = useState({
@@ -147,6 +151,15 @@ const PlanningSection: React.FC = () => {
     const start = (todoPage - 1) * pageSize;
     return filteredTodoItems.slice(start, start + pageSize);
   }, [filteredTodoItems, todoPage]);
+  const activeReservationByItemId = useMemo(() => {
+    const map = new Map<number, ToBuyReservationDto>();
+    reservations.forEach((reservation) => {
+      if (reservation.status === 'ACTIVE' && !map.has(reservation.to_buy_item)) {
+        map.set(reservation.to_buy_item, reservation);
+      }
+    });
+    return map;
+  }, [reservations]);
 
   const loadData = async () => {
     if (!hasToken) {
@@ -156,11 +169,23 @@ const PlanningSection: React.FC = () => {
 
     try {
       setBusy(true);
-      const [p, tb, td, cats] = await Promise.all([listProjects(), listToBuyItems(), listTodos(), listCategories()]);
+      const [p, tb, td, cats, periods, activeReservations] = await Promise.all([
+        listProjects(),
+        listToBuyItems(),
+        listTodos(),
+        listCategories(),
+        listBudgetPeriods({ status: 'OPEN' }),
+        listReservations({ status: 'ACTIVE' }),
+      ]);
       setProjects(p.results.map((x) => ({ id: x.id, name: x.name })));
       setCategories(cats.results.filter((x) => x.type === 'EXPENSE'));
       setToBuyItems(tb.results);
       setTodoItems(td.results);
+      setBudgetPeriods(periods.results);
+      setReservations(activeReservations.results);
+      if (!selectedReservePeriodId && periods.results.length > 0) {
+        setSelectedReservePeriodId(String(periods.results[0].id));
+      }
       setStatusMsg(null);
     } catch (error) {
       setStatusMsg(`Load failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -184,6 +209,11 @@ const PlanningSection: React.FC = () => {
   useEffect(() => {
     if (todoPage > todoTotalPages) setTodoPage(todoTotalPages);
   }, [todoPage, todoTotalPages]);
+  useEffect(() => {
+    if (!selectedReservePeriodId && budgetPeriods.length > 0) {
+      setSelectedReservePeriodId(String(budgetPeriods[0].id));
+    }
+  }, [selectedReservePeriodId, budgetPeriods]);
 
   const getProjectName = (projectId: number | null) => {
     if (!projectId) return '-';
@@ -339,6 +369,64 @@ const PlanningSection: React.FC = () => {
     }
   };
 
+  const handleCreateReservation = async (item: ToBuyItemDto) => {
+    if (!selectedReservePeriodId) {
+      setStatusMsg('Select an open budget period first.');
+      return;
+    }
+    if (activeReservationByItemId.has(item.id)) {
+      setStatusMsg('This ToBuy item already has an active reservation.');
+      return;
+    }
+
+    const initialAmount = item.estimated_cost || '';
+    const input = window.prompt(`Reservation amount for "${item.name}"`, initialAmount);
+    if (input === null) return;
+
+    const normalized = input.trim().replace(',', '.');
+    const numeric = Number(normalized);
+    if (!normalized || Number.isNaN(numeric) || numeric <= 0) {
+      setStatusMsg('Reservation amount must be a positive number.');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      await createReservation({
+        to_buy_item: item.id,
+        budget_period: Number(selectedReservePeriodId),
+        amount: normalized,
+        note: `Reserved from Planning UI (${item.name})`,
+      });
+      await loadData();
+      setStatusMsg(`Reserved ${normalized} for "${item.name}".`);
+    } catch (error) {
+      setStatusMsg(`Reserve failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReleaseReservation = async (item: ToBuyItemDto) => {
+    const reservation = activeReservationByItemId.get(item.id);
+    if (!reservation) {
+      setStatusMsg('No active reservation found for this item.');
+      return;
+    }
+    if (!window.confirm(`Release reservation (${reservation.amount}) for "${item.name}"?`)) return;
+
+    try {
+      setBusy(true);
+      await releaseReservation(reservation.id);
+      await loadData();
+      setStatusMsg(`Reservation released for "${item.name}".`);
+    } catch (error) {
+      setStatusMsg(`Release failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex items-center justify-between gap-3">
@@ -444,12 +532,31 @@ const PlanningSection: React.FC = () => {
             </div>
           </div>
 
+          <div className={`p-3 rounded-xl border flex flex-col md:flex-row md:items-center gap-3 ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-100'}`}>
+            <span className="text-sm font-semibold">Reservation period</span>
+            <select
+              value={selectedReservePeriodId}
+              onChange={(e) => setSelectedReservePeriodId(e.target.value)}
+              className={`px-3 py-2 rounded-lg border text-sm min-w-[280px] ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+            >
+              {budgetPeriods.length === 0 && <option value="">No open budget period</option>}
+              {budgetPeriods.map((period) => (
+                <option key={period.id} value={period.id}>
+                  #{period.id} {period.period_start} to {period.period_end}
+                </option>
+              ))}
+            </select>
+            <span className="text-xs text-gray-500">
+              Reserve/Unreserve actions use this selected open period.
+            </span>
+          </div>
+
           <div className="overflow-auto">
             <div className="text-xs text-gray-500 mb-2">
               Showing {pagedToBuyItems.length} / {filteredToBuyItems.length} filtered (total {toBuyItems.length})
             </div>
             <table className="w-full text-sm">
-              <thead><tr className="text-left text-gray-500"><th className="py-2">ID</th><th>Name</th><th>Category</th><th>Estimated</th><th>Status</th><th>Project</th><th>Target</th><th>Actions</th></tr></thead>
+              <thead><tr className="text-left text-gray-500"><th className="py-2">ID</th><th>Name</th><th>Category</th><th>Estimated</th><th>Status</th><th>Project</th><th>Target</th><th>Reservation</th><th>Actions</th></tr></thead>
               <tbody>
                 {pagedToBuyItems.map((x) => (
                   <tr key={x.id} className="border-t border-gray-100 dark:border-slate-700">
@@ -517,6 +624,17 @@ const PlanningSection: React.FC = () => {
                     </td>
                     <td>{x.target_date ?? '-'}</td>
                     <td>
+                      {(() => {
+                        const activeReservation = activeReservationByItemId.get(x.id);
+                        if (!activeReservation) return <span className="text-gray-500">Not reserved</span>;
+                        return (
+                          <span className="text-emerald-700 font-semibold">
+                            Active ({activeReservation.amount})
+                          </span>
+                        );
+                      })()}
+                    </td>
+                    <td>
                       {editingToBuyId === x.id ? (
                         <div className="flex gap-2">
                           <button onClick={saveToBuyEdit} disabled={busy} className="p-1 rounded bg-emerald-600 text-white"><Save size={14} /></button>
@@ -525,6 +643,23 @@ const PlanningSection: React.FC = () => {
                       ) : (
                         <div className="flex gap-2">
                           <button onClick={() => startEditToBuy(x)} disabled={busy} className="p-1 rounded bg-violet-600 text-white"><Edit3 size={14} /></button>
+                          {activeReservationByItemId.has(x.id) ? (
+                            <button
+                              onClick={() => handleReleaseReservation(x)}
+                              disabled={busy}
+                              className="px-2 py-1 rounded bg-amber-600 text-white text-xs font-semibold"
+                            >
+                              Unreserve
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleCreateReservation(x)}
+                              disabled={busy || !hasToken || !selectedReservePeriodId}
+                              className="px-2 py-1 rounded bg-emerald-600 text-white text-xs font-semibold disabled:opacity-50"
+                            >
+                              Reserve
+                            </button>
+                          )}
                           <button onClick={() => handleDeleteToBuy(x.id)} disabled={busy} className="p-1 rounded bg-red-600 text-white"><Trash2 size={14} /></button>
                         </div>
                       )}

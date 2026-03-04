@@ -43,6 +43,18 @@ export interface TodoItemDto {
   updated_at: string;
 }
 
+export interface ToBuyReservationDto {
+  id: number;
+  to_buy_item: number;
+  budget_period: number;
+  amount: string;
+  status: 'ACTIVE' | 'RELEASED' | 'CONSUMED';
+  note: string;
+  released_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CreateToBuyInput {
   project?: number | null;
   name: string;
@@ -102,3 +114,32 @@ export const deleteTodo = async (id: number): Promise<void> =>
 
 export const listCategories = async (): Promise<PaginatedResponse<CategoryDto>> =>
   apiClient.get<PaginatedResponse<CategoryDto>>('/categories/?page_size=300');
+
+export const listReservations = async (params?: { status?: 'ACTIVE' | 'RELEASED' | 'CONSUMED'; to_buy_item_id?: number; budget_period_id?: number }) => {
+  const search = new URLSearchParams();
+  if (params?.status) search.set('status', params.status);
+  if (params?.to_buy_item_id) search.set('to_buy_item_id', String(params.to_buy_item_id));
+  if (params?.budget_period_id) search.set('budget_period_id', String(params.budget_period_id));
+  search.set('page_size', '200');
+  return apiClient.get<PaginatedResponse<ToBuyReservationDto>>(`/reservations/?${search.toString()}`);
+};
+
+export const createReservation = async (payload: { to_buy_item: number; budget_period: number; amount: string; note?: string }) =>
+  apiClient.post<ToBuyReservationDto, { to_buy_item: number; budget_period: number; amount: string; note?: string }>('/reservations/', payload);
+
+export const releaseReservation = async (reservationId: number) =>
+  apiClient.post<ToBuyReservationDto, Record<string, never>>(`/reservations/${reservationId}/release/`, {});
+
+export const markToBuyRecorded = async (
+  toBuyItemId: number,
+  payload?: { account_id?: number; category_id?: number; amount?: string; entry_date?: string; note?: string }
+) =>
+  apiClient.post<
+    {
+      to_buy_item_id: number;
+      ledger_entry_id: number;
+      amount: string;
+      reservation_consumed: boolean;
+    },
+    { account_id?: number; category_id?: number; amount?: string; entry_date?: string; note?: string }
+  >(`/to-buy-items/${toBuyItemId}/mark-recorded/`, payload || {});

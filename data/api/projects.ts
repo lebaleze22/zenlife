@@ -2,6 +2,17 @@ import { apiClient } from './client';
 
 export type ProjectPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type ProjectStatus = 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'ON_HOLD';
+export interface ProjectTaskDto {
+  id: string;
+  title: string;
+  status: ProjectStatus;
+}
+
+export interface ProjectSectionDto {
+  id: string;
+  name: string;
+  checklist: ProjectTaskDto[];
+}
 
 export interface ProjectDto {
   id: number;
@@ -10,7 +21,8 @@ export interface ProjectDto {
   priority: ProjectPriority;
   status: ProjectStatus;
   deadline: string | null;
-  tasks: Array<{ id: string; title: string; status: ProjectStatus }>;
+  tasks: ProjectTaskDto[];
+  sections?: ProjectSectionDto[];
   created_at: string;
   updated_at: string;
 }
@@ -28,7 +40,8 @@ export interface CreateProjectInput {
   priority?: ProjectPriority;
   status?: ProjectStatus;
   deadline?: string | null;
-  tasks?: Array<{ id: string; title: string; status: ProjectStatus }>;
+  tasks?: ProjectTaskDto[];
+  sections?: ProjectSectionDto[];
 }
 
 export interface UpdateProjectInput extends CreateProjectInput {}
