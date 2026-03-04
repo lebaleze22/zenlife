@@ -1,0 +1,5 @@
+﻿Django==5.1.7
+djangorestframework==3.15.2
+djangorestframework-simplejwt==5.4.0
+psycopg[binary]==3.2.6
+django-cors-headers==4.7.0

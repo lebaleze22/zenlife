@@ -1,0 +1,129 @@
+You are a senior product manager + tech lead + UX writer. 
+Your job: produce COMPLETE, IMPLEMENTATION-READY DOCUMENTATION for a modern personal finance management app.
+
+## 0) Output format (must follow)
+Return a structured documentation pack with these sections in order:
+
+1. Executive summary (what the app is, for who, key differentiators)
+2. Core features (grouped by modules)
+3. User personas + user journeys (at least 3 personas)
+4. Functional requirements (detailed, numbered, testable)
+5. Non-functional requirements (security, performance, privacy, offline, accessibility, i18n)
+6. Data model (entities, attributes, relationships, constraints, enums)
+7. Business rules & calculations (budgets, cashflow, net worth, recurring, debt payoff, alerts, etc.)
+8. API specification (REST, endpoints, request/response examples, pagination/filtering, errors)
+9. UI/UX spec (screens, navigation, components, empty states, validations)
+10. Analytics & insights (dashboards, KPIs, forecasting ideas)
+11. Notifications & reminders spec
+12. Roles & permissions (even if single-user, include future-ready structure)
+13. Integrations (bank sync options, CSV import/export, calendar, email receipts)
+14. Security model (auth, encryption, secrets, audit logs, data retention)
+15. Backup & restore + data portability
+16. Testing strategy (unit/integration/e2e, test cases list)
+17. Deployment architecture (local + cloud, environments, CI/CD)
+18. Roadmap (MVP -> V1 -> V2), with clear milestones
+19. Risks & mitigations
+20. Glossary
+
+Be precise, avoid fluff. Use tables where helpful.
+
+## 1) Product goals
+Build a modern finances management app that supports:
+- Expense & income tracking (manual + import)
+- Budgeting (envelopes/categories, monthly/weekly)
+- Accounts (cash, bank, card, savings), transfers, reconciliations
+- Bills & recurring payments
+- Savings goals (targets, progress, automation suggestions)
+- Debt tracking and payoff strategies (snowball/avalanche)
+- Investments tracking (basic portfolio view)
+- Net worth dashboard
+- Reports (category trends, merchant insights, cashflow)
+- Smart search and filters (by category, date, merchant, tag)
+- Attachments for transactions (receipts)
+- Multi-currency support
+- Export/import (CSV, PDF summaries)
+- Offline-first (works without internet, sync later)
+- Secure by design (encryption, PIN/biometric lock, backups)
+
+## 2) Special module: To-Buy / Apartment & Kid Planning List
+Add a dedicated module that behaves like a “shopping + planning” system:
+- Two list types:
+  A) TODO list (tasks) 
+  B) TO-BUY list (planned purchases)
+- To-Buy items must support:
+  - name, category (furniture, kitchen, baby, safety, etc.)
+  - priority (low/med/high)
+  - status (idea, researching, planned, ordered, delivered, installed, returned)
+  - quantity
+  - estimated cost and actual cost
+  - preferred store / link
+  - target date (when needed)
+  - notes + photos
+  - tags (e.g., “kid”, “urgent”, “apartment”)
+  - warranty info (optional)
+  - split payment / who pays (optional)
+- Budget integration:
+  - each To-Buy item can reserve budget (“planned spend”) even before purchase
+  - ability to convert an item into a real expense transaction when bought
+  - show “planned vs actual” for furnishing and kid-prep projects
+- Project view:
+  - “New Apartment Setup” project with rooms (bedroom, kitchen, living room…)
+  - “Kid Arrival” project with checklists (essentials, medical, safety)
+  - progress % per project, total planned cost, remaining cost
+- Reminders:
+  - notifications before target date, and for overdue items
+- Optional: shared mode later (collab list), but MVP can be single-user
+
+## 3) Assumptions (state them clearly)
+- Single user for MVP, but design data model to support multi-user later
+- Mobile-first UI (Android/iOS) + optional web dashboard
+- Bank syncing may be deferred; include import via CSV first
+- Privacy: user owns data; provide export + local encryption
+
+## 4) Tech direction (propose 2 viable stacks)
+Provide documentation that is tech-agnostic but also propose 2 recommended stacks:
+Stack A (mobile-first): Flutter + local DB (SQLite) + sync service
+Stack B (web-first): Vue/React + Spring Boot or Django + Postgres
+Include pros/cons, complexity, and what you recommend for MVP.
+
+## 5) Data model requirements (must include)
+Minimum entities:
+User, Account, Transaction, Category, Merchant, Budget, BudgetPeriod,
+RecurringRule, Bill, Goal, Debt, InvestmentAsset, Attachment,
+Tag, NotificationRule,
+TodoItem, ToBuyItem, Project, Room/Section, ChecklistTemplate,
+PlannedSpendReservation (links ToBuyItem to Budget)
+AuditLog (even if simple)
+
+Include keys, indexes, and referential integrity rules.
+
+## 6) API requirements (must include)
+- Auth endpoints
+- CRUD for finance entities
+- CRUD for todo/to-buy/projects
+- Endpoint to convert ToBuyItem -> Transaction
+- Reporting endpoints: spending summary, cashflow, net worth, planned vs actual
+- Import/export endpoints
+- Clear error model (codes/messages)
+
+## 7) UI screens (must include)
+- Onboarding + security setup
+- Home dashboard (cashflow, budgets, upcoming bills, planned purchases)
+- Transactions list + add/edit + receipt attach
+- Budget screen (planned vs actual + reserved spend)
+- Accounts screen
+- Goals/debts/investments screens (basic)
+- To-Buy projects screen (Apartment / Kid)
+- Project details (rooms/sections, progress, cost breakdown)
+- Todo screen
+- Settings (currency, backup/export, security, categories)
+
+## 8) Deliverables
+At the end, output:
+- MVP scope checklist
+- V1 scope checklist
+- A “Definition of Done” list
+- A short sample dataset (JSON) for 5 transactions + 5 to-buy items + 1 project to demonstrate the model
+
+IMPORTANT: The final documentation must be detailed enough that a developer can start implementing immediately.
+Ask NO follow-up questions. If something is ambiguous, make reasonable assumptions and state them.
