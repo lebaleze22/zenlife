@@ -55,6 +55,19 @@ export interface ToBuyReservationDto {
   updated_at: string;
 }
 
+export interface TimeBlockDto {
+  id: number;
+  project: number | null;
+  todo_item: number | null;
+  title: string;
+  start_at: string;
+  end_at: string;
+  duration_minutes: number;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CreateToBuyInput {
   project?: number | null;
   name: string;
@@ -81,6 +94,15 @@ export interface UpdateToBuyInput extends Partial<CreateToBuyInput> {
 }
 
 export interface UpdateTodoInput extends Partial<CreateTodoInput> {}
+export interface CreateTimeBlockInput {
+  project?: number | null;
+  todo_item?: number | null;
+  title: string;
+  start_at: string;
+  end_at: string;
+  notes?: string;
+}
+export interface UpdateTimeBlockInput extends Partial<CreateTimeBlockInput> {}
 
 export interface CategoryDto {
   id: number;
@@ -143,3 +165,22 @@ export const markToBuyRecorded = async (
     },
     { account_id?: number; category_id?: number; amount?: string; entry_date?: string; note?: string }
   >(`/to-buy-items/${toBuyItemId}/mark-recorded/`, payload || {});
+
+export const listTimeBlocks = async (params?: { from?: string; to?: string; project_id?: number; todo_item_id?: number }) => {
+  const search = new URLSearchParams();
+  if (params?.from) search.set('from', params.from);
+  if (params?.to) search.set('to', params.to);
+  if (params?.project_id) search.set('project_id', String(params.project_id));
+  if (params?.todo_item_id) search.set('todo_item_id', String(params.todo_item_id));
+  search.set('page_size', '500');
+  return apiClient.get<PaginatedResponse<TimeBlockDto>>(`/time-blocks/?${search.toString()}`);
+};
+
+export const createTimeBlock = async (payload: CreateTimeBlockInput): Promise<TimeBlockDto> =>
+  apiClient.post<TimeBlockDto, CreateTimeBlockInput>('/time-blocks/', payload);
+
+export const updateTimeBlock = async (id: number, payload: UpdateTimeBlockInput): Promise<TimeBlockDto> =>
+  apiClient.patch<TimeBlockDto, UpdateTimeBlockInput>(`/time-blocks/${id}/`, payload);
+
+export const deleteTimeBlock = async (id: number): Promise<void> =>
+  apiClient.del<void>(`/time-blocks/${id}/`);

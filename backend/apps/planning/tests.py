@@ -201,3 +201,122 @@ class ReservationApiTests(APITestCase):
         )
         self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(LedgerEntry.objects.filter(user=self.user, deleted_at__isnull=True).count(), 1)
+
+
+class TimeBlockApiTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username="timeblock_user",
+            email="timeblock_user@example.com",
+            password="StrongPass123!",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_time_block(self):
+        response = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Deep Work Session",
+                "start_at": "2026-03-05T09:00:00Z",
+                "end_at": "2026-03-05T10:30:00Z",
+                "notes": "Math revision",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["duration_minutes"], 90)
+        self.assertEqual(response.data["title"], "Deep Work Session")
+
+    def test_create_time_block_rejects_invalid_range(self):
+        response = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Invalid Slot",
+                "start_at": "2026-03-05T12:00:00Z",
+                "end_at": "2026-03-05T11:00:00Z",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_list_time_blocks_with_range_filter(self):
+        self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Morning Focus",
+                "start_at": "2026-03-05T07:00:00Z",
+                "end_at": "2026-03-05T08:00:00Z",
+            },
+            format="json",
+        )
+        self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Evening Focus",
+                "start_at": "2026-03-07T19:00:00Z",
+                "end_at": "2026-03-07T20:00:00Z",
+            },
+            format="json",
+        )
+
+        response = self.client.get("/api/v1/time-blocks/?from=2026-03-05T00:00:00Z&to=2026-03-05T23:59:59Z")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Morning Focus")
+
+    def test_create_time_block_rejects_overlap(self):
+        self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Existing Block",
+                "start_at": "2026-03-05T09:00:00Z",
+                "end_at": "2026-03-05T10:00:00Z",
+            },
+            format="json",
+        )
+
+        response = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Overlapping Block",
+                "start_at": "2026-03-05T09:30:00Z",
+                "end_at": "2026-03-05T10:30:00Z",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("start_at", response.data)
+
+    def test_update_time_block_rejects_overlap(self):
+        first = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "First Block",
+                "start_at": "2026-03-05T08:00:00Z",
+                "end_at": "2026-03-05T09:00:00Z",
+            },
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Second Block",
+                "start_at": "2026-03-05T10:00:00Z",
+                "end_at": "2026-03-05T11:00:00Z",
+            },
+            format="json",
+        )
+
+        response = self.client.patch(
+            f"/api/v1/time-blocks/{first.data['id']}/",
+            {
+                "start_at": "2026-03-05T10:30:00Z",
+                "end_at": "2026-03-05T11:30:00Z",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("start_at", response.data)

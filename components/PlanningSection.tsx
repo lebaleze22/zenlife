@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../AppContext';
 import { translations } from '../i18n';
-import { Boxes, CheckSquare, Edit3, RefreshCw, Save, Trash2, X } from 'lucide-react';
-import { createReservation, createToBuyItem, createTodo, deleteToBuyItem, deleteTodo, listCategories, listReservations, listToBuyItems, listTodos, releaseReservation, updateToBuyItem, updateTodo, type CategoryDto, type PlanningPriority, type ToBuyReservationDto, type ToBuyStatus, type TodoStatus, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
+import { Boxes, CalendarDays, CheckSquare, Edit3, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import { createReservation, createTimeBlock, createToBuyItem, createTodo, deleteTimeBlock, deleteToBuyItem, deleteTodo, listCategories, listReservations, listTimeBlocks, listToBuyItems, listTodos, releaseReservation, updateTimeBlock, updateToBuyItem, updateTodo, type CategoryDto, type PlanningPriority, type TimeBlockDto, type ToBuyReservationDto, type ToBuyStatus, type TodoStatus, type ToBuyItemDto, type TodoItemDto } from '../data/api/planning';
 import { listBudgetPeriods, type BudgetPeriodDto } from '../data/api/budgets';
 import { listProjects } from '../data/api/projects';
 
@@ -38,12 +38,51 @@ const PLANNING_CATEGORY_SUGGESTIONS = [
   'Other',
 ];
 
+const parseIsoDateUtc = (isoDate: string) => {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
+const formatIsoDateUtc = (date: Date) => {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const startOfWeekIso = (isoDate: string) => {
+  const date = parseIsoDateUtc(isoDate);
+  const day = date.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  date.setUTCDate(date.getUTCDate() + diff);
+  return formatIsoDateUtc(date);
+};
+
+const addDaysIso = (isoDate: string, days: number) => {
+  const date = parseIsoDateUtc(isoDate);
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatIsoDateUtc(date);
+};
+
+const toApiDateTime = (isoDate: string, hhmm: string) => {
+  const dt = new Date(`${isoDate}T${hhmm}:00`);
+  return dt.toISOString();
+};
+
+const formatDayLabel = (isoDate: string) =>
+  parseIsoDateUtc(isoDate).toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+
 const PlanningSection: React.FC = () => {
   const pageSize = 10;
   const { language, theme } = useApp();
   const t = translations[language];
 
-  const [tab, setTab] = useState<'tobuy' | 'todo'>('tobuy');
+  const [tab, setTab] = useState<'tobuy' | 'todo' | 'timeblocks'>('tobuy');
   const [busy, setBusy] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
@@ -51,9 +90,13 @@ const PlanningSection: React.FC = () => {
   const [categories, setCategories] = useState<CategoryDto[]>([]);
   const [toBuyItems, setToBuyItems] = useState<ToBuyItemDto[]>([]);
   const [todoItems, setTodoItems] = useState<TodoItemDto[]>([]);
+  const [timeBlocks, setTimeBlocks] = useState<TimeBlockDto[]>([]);
   const [budgetPeriods, setBudgetPeriods] = useState<BudgetPeriodDto[]>([]);
   const [reservations, setReservations] = useState<ToBuyReservationDto[]>([]);
   const [selectedReservePeriodId, setSelectedReservePeriodId] = useState('');
+  const [weekAnchorDate, setWeekAnchorDate] = useState(new Date().toISOString().slice(0, 10));
+  const [draggingTimeBlockId, setDraggingTimeBlockId] = useState<number | null>(null);
+  const [editingTimeBlockId, setEditingTimeBlockId] = useState<number | null>(null);
   const [editingToBuyId, setEditingToBuyId] = useState<number | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
   const [toBuyEditForm, setToBuyEditForm] = useState({
@@ -105,6 +148,24 @@ const PlanningSection: React.FC = () => {
     priority: 'MEDIUM' as PlanningPriority,
     status: 'NOT_STARTED' as TodoStatus,
     due_date: new Date().toISOString().split('T')[0],
+  });
+  const [timeBlockForm, setTimeBlockForm] = useState({
+    project: '',
+    todo_item: '',
+    title: '',
+    date: new Date().toISOString().split('T')[0],
+    start_time: '09:00',
+    end_time: '10:00',
+    notes: '',
+  });
+  const [timeBlockEditForm, setTimeBlockEditForm] = useState({
+    project: '',
+    todo_item: '',
+    title: '',
+    date: '',
+    start_time: '',
+    end_time: '',
+    notes: '',
   });
 
   const hasToken = !!localStorage.getItem('zenlife_access_token');
@@ -160,6 +221,24 @@ const PlanningSection: React.FC = () => {
     });
     return map;
   }, [reservations]);
+  const weekStart = useMemo(() => startOfWeekIso(weekAnchorDate), [weekAnchorDate]);
+  const weekDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => addDaysIso(weekStart, i)),
+    [weekStart]
+  );
+  const timeBlocksByDay = useMemo(() => {
+    const map = new Map<string, TimeBlockDto[]>();
+    weekDays.forEach((day) => map.set(day, []));
+    timeBlocks.forEach((block) => {
+      const day = block.start_at.slice(0, 10);
+      if (!map.has(day)) return;
+      map.get(day)!.push(block);
+    });
+    map.forEach((blocks) => {
+      blocks.sort((a, b) => a.start_at.localeCompare(b.start_at));
+    });
+    return map;
+  }, [timeBlocks, weekDays]);
 
   const loadData = async () => {
     if (!hasToken) {
@@ -169,13 +248,16 @@ const PlanningSection: React.FC = () => {
 
     try {
       setBusy(true);
-      const [p, tb, td, cats, periods, activeReservations] = await Promise.all([
+      const weekFrom = `${weekStart}T00:00:00Z`;
+      const weekTo = `${addDaysIso(weekStart, 6)}T23:59:59Z`;
+      const [p, tb, td, cats, periods, activeReservations, blocks] = await Promise.all([
         listProjects(),
         listToBuyItems(),
         listTodos(),
         listCategories(),
         listBudgetPeriods({ status: 'OPEN' }),
         listReservations({ status: 'ACTIVE' }),
+        listTimeBlocks({ from: weekFrom, to: weekTo }),
       ]);
       setProjects(p.results.map((x) => ({ id: x.id, name: x.name })));
       setCategories(cats.results.filter((x) => x.type === 'EXPENSE'));
@@ -183,6 +265,7 @@ const PlanningSection: React.FC = () => {
       setTodoItems(td.results);
       setBudgetPeriods(periods.results);
       setReservations(activeReservations.results);
+      setTimeBlocks(blocks.results);
       if (!selectedReservePeriodId && periods.results.length > 0) {
         setSelectedReservePeriodId(String(periods.results[0].id));
       }
@@ -196,7 +279,7 @@ const PlanningSection: React.FC = () => {
 
   useEffect(() => {
     loadData();
-  }, []);
+  }, [weekStart]);
   useEffect(() => {
     setToBuyPage(1);
   }, [toBuyFilters]);
@@ -218,6 +301,24 @@ const PlanningSection: React.FC = () => {
   const getProjectName = (projectId: number | null) => {
     if (!projectId) return '-';
     return projects.find((p) => p.id === projectId)?.name || `#${projectId}`;
+  };
+
+  const findConflictingTimeBlock = async (startAt: string, endAt: string, excludeId?: number) => {
+    const day = startAt.slice(0, 10);
+    const result = await listTimeBlocks({
+      from: `${day}T00:00:00Z`,
+      to: `${day}T23:59:59Z`,
+    });
+    const candidateStart = new Date(startAt).getTime();
+    const candidateEnd = new Date(endAt).getTime();
+    return (
+      result.results.find((x) => {
+        if (excludeId && x.id === excludeId) return false;
+        const existingStart = new Date(x.start_at).getTime();
+        const existingEnd = new Date(x.end_at).getTime();
+        return candidateStart < existingEnd && existingStart < candidateEnd;
+      }) || null
+    );
   };
 
   const handleCreateToBuy = async () => {
@@ -427,6 +528,146 @@ const PlanningSection: React.FC = () => {
     }
   };
 
+  const handleCreateTimeBlock = async () => {
+    if (!timeBlockForm.title.trim()) {
+      setStatusMsg('Time block title is required.');
+      return;
+    }
+
+    const startAt = toApiDateTime(timeBlockForm.date, timeBlockForm.start_time);
+    const endAt = toApiDateTime(timeBlockForm.date, timeBlockForm.end_time);
+    if (new Date(endAt).getTime() <= new Date(startAt).getTime()) {
+      setStatusMsg('End time must be after start time.');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const conflict = await findConflictingTimeBlock(startAt, endAt);
+      if (conflict) {
+        setStatusMsg(`Conflict: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
+        return;
+      }
+      await createTimeBlock({
+        project: timeBlockForm.project ? Number(timeBlockForm.project) : null,
+        todo_item: timeBlockForm.todo_item ? Number(timeBlockForm.todo_item) : null,
+        title: timeBlockForm.title.trim(),
+        start_at: startAt,
+        end_at: endAt,
+        notes: timeBlockForm.notes.trim() || undefined,
+      });
+      setTimeBlockForm((p) => ({ ...p, title: '', notes: '' }));
+      await loadData();
+      setStatusMsg('Time block created.');
+    } catch (error) {
+      setStatusMsg(`Create time block failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDeleteTimeBlock = async (id: number) => {
+    if (!window.confirm('Delete this time block?')) return;
+    try {
+      setBusy(true);
+      await deleteTimeBlock(id);
+      await loadData();
+      setStatusMsg('Time block deleted.');
+    } catch (error) {
+      setStatusMsg(`Delete time block failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startEditTimeBlock = (block: TimeBlockDto) => {
+    setEditingTimeBlockId(block.id);
+    setTimeBlockEditForm({
+      project: block.project ? String(block.project) : '',
+      todo_item: block.todo_item ? String(block.todo_item) : '',
+      title: block.title,
+      date: block.start_at.slice(0, 10),
+      start_time: block.start_at.slice(11, 16),
+      end_time: block.end_at.slice(11, 16),
+      notes: block.notes || '',
+    });
+  };
+
+  const handleSaveTimeBlockEdit = async () => {
+    if (!editingTimeBlockId) return;
+    if (!timeBlockEditForm.title.trim()) {
+      setStatusMsg('Time block title is required.');
+      return;
+    }
+    const startAt = toApiDateTime(timeBlockEditForm.date, timeBlockEditForm.start_time);
+    const endAt = toApiDateTime(timeBlockEditForm.date, timeBlockEditForm.end_time);
+    if (new Date(endAt).getTime() <= new Date(startAt).getTime()) {
+      setStatusMsg('End time must be after start time.');
+      return;
+    }
+
+    try {
+      setBusy(true);
+      const conflict = await findConflictingTimeBlock(startAt, endAt, editingTimeBlockId);
+      if (conflict) {
+        setStatusMsg(`Conflict: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
+        return;
+      }
+      await updateTimeBlock(editingTimeBlockId, {
+        project: timeBlockEditForm.project ? Number(timeBlockEditForm.project) : null,
+        todo_item: timeBlockEditForm.todo_item ? Number(timeBlockEditForm.todo_item) : null,
+        title: timeBlockEditForm.title.trim(),
+        start_at: startAt,
+        end_at: endAt,
+        notes: timeBlockEditForm.notes.trim() || '',
+      });
+      setEditingTimeBlockId(null);
+      await loadData();
+      setStatusMsg('Time block updated.');
+    } catch (error) {
+      setStatusMsg(`Update time block failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDropTimeBlock = async (targetDay: string) => {
+    if (!draggingTimeBlockId) return;
+    const block = timeBlocks.find((x) => x.id === draggingTimeBlockId);
+    if (!block) {
+      setDraggingTimeBlockId(null);
+      return;
+    }
+
+    const currentDay = block.start_at.slice(0, 10);
+    if (currentDay === targetDay) {
+      setDraggingTimeBlockId(null);
+      return;
+    }
+
+    const startTime = block.start_at.slice(11, 16);
+    const endTime = block.end_at.slice(11, 16);
+    const nextStartAt = toApiDateTime(targetDay, startTime);
+    const nextEndAt = toApiDateTime(targetDay, endTime);
+
+    try {
+      setBusy(true);
+      const conflict = await findConflictingTimeBlock(nextStartAt, nextEndAt, block.id);
+      if (conflict) {
+        setStatusMsg(`Move blocked: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
+        return;
+      }
+      await updateTimeBlock(block.id, { start_at: nextStartAt, end_at: nextEndAt });
+      await loadData();
+      setStatusMsg(`Moved "${block.title}" to ${targetDay}.`);
+    } catch (error) {
+      setStatusMsg(`Move failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setDraggingTimeBlockId(null);
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex items-center justify-between gap-3">
@@ -445,6 +686,9 @@ const PlanningSection: React.FC = () => {
         </button>
         <button onClick={() => setTab('todo')} className={`px-4 py-2 rounded-xl font-semibold ${tab === 'todo' ? 'bg-cyan-600 text-white' : theme === 'dark' ? 'bg-slate-800' : 'bg-white border border-gray-100'}`}>
           <span className="inline-flex items-center gap-2"><CheckSquare size={16} /> Todos</span>
+        </button>
+        <button onClick={() => setTab('timeblocks')} className={`px-4 py-2 rounded-xl font-semibold ${tab === 'timeblocks' ? 'bg-emerald-600 text-white' : theme === 'dark' ? 'bg-slate-800' : 'bg-white border border-gray-100'}`}>
+          <span className="inline-flex items-center gap-2"><CalendarDays size={16} /> Time Blocks</span>
         </button>
       </div>
 
@@ -854,8 +1098,214 @@ const PlanningSection: React.FC = () => {
         </div>
       )}
 
+      {tab === 'timeblocks' && (
+        <div className={`p-6 rounded-2xl border space-y-4 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>
+          <h3 className="text-lg font-bold">Create Time Block</h3>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <select
+              value={timeBlockForm.project}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, project: e.target.value }))}
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            >
+              <option value="">No project</option>
+              {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <select
+              value={timeBlockForm.todo_item}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, todo_item: e.target.value }))}
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            >
+              <option value="">No linked todo</option>
+              {todoItems.map((item) => <option key={item.id} value={item.id}>#{item.id} {item.title}</option>)}
+            </select>
+            <input
+              value={timeBlockForm.title}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, title: e.target.value }))}
+              placeholder="title"
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            />
+            <input
+              value={timeBlockForm.date}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, date: e.target.value }))}
+              type="date"
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            />
+            <input
+              value={timeBlockForm.start_time}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, start_time: e.target.value }))}
+              type="time"
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            />
+            <input
+              value={timeBlockForm.end_time}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, end_time: e.target.value }))}
+              type="time"
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            />
+            <textarea
+              value={timeBlockForm.notes}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, notes: e.target.value }))}
+              placeholder="notes"
+              rows={2}
+              className={`px-3 py-2 rounded-lg border md:col-span-4 ${theme === 'dark' ? 'bg-slate-700 border-slate-600 text-slate-100' : 'bg-gray-50 border-gray-100 text-gray-900'}`}
+            />
+          </div>
+          <button onClick={handleCreateTimeBlock} disabled={busy || !hasToken} className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60">Create Time Block</button>
+
+          <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-100'}`}>
+            <div className="text-sm font-semibold">
+              Week: {weekDays[0]} to {weekDays[6]}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setWeekAnchorDate(addDaysIso(weekStart, -7))}
+                className="px-3 py-1 rounded border border-gray-200 dark:border-slate-600 text-sm"
+              >
+                Prev Week
+              </button>
+              <button
+                onClick={() => setWeekAnchorDate(new Date().toISOString().slice(0, 10))}
+                className="px-3 py-1 rounded border border-gray-200 dark:border-slate-600 text-sm"
+              >
+                This Week
+              </button>
+              <button
+                onClick={() => setWeekAnchorDate(addDaysIso(weekStart, 7))}
+                className="px-3 py-1 rounded border border-gray-200 dark:border-slate-600 text-sm"
+              >
+                Next Week
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-3">
+            {weekDays.map((day) => {
+              const blocks = timeBlocksByDay.get(day) || [];
+              return (
+                <div
+                  key={day}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    void handleDropTimeBlock(day);
+                  }}
+                  className={`p-3 rounded-xl border min-h-44 transition-colors ${draggingTimeBlockId ? 'border-dashed' : ''} ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-200'}`}
+                >
+                  <div className="font-semibold text-sm mb-2">
+                    {formatDayLabel(day)}
+                    <span className="ml-2 text-xs text-gray-500">{day}</span>
+                  </div>
+                  <div className="space-y-2">
+                    {blocks.length === 0 && <div className="text-xs text-gray-500">No blocks</div>}
+                    {blocks.map((block) => {
+                      const startLabel = block.start_at.slice(11, 16);
+                      const endLabel = block.end_at.slice(11, 16);
+                      return (
+                        <div
+                          key={block.id}
+                          draggable={editingTimeBlockId !== block.id}
+                          onDragStart={() => setDraggingTimeBlockId(block.id)}
+                          onDragEnd={() => setDraggingTimeBlockId(null)}
+                          className={`rounded-lg border p-2 cursor-move shadow-sm ${theme === 'dark' ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-300'}`}
+                        >
+                          {editingTimeBlockId === block.id ? (
+                            <div className="space-y-2">
+                              <input
+                                value={timeBlockEditForm.title}
+                                onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, title: e.target.value }))}
+                                className={`px-2 py-1 rounded border w-full text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                              />
+                              <div className="grid grid-cols-2 gap-2">
+                                <input
+                                  value={timeBlockEditForm.date}
+                                  onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, date: e.target.value }))}
+                                  type="date"
+                                  className={`px-2 py-1 rounded border text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                                />
+                                <select
+                                  value={timeBlockEditForm.project}
+                                  onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, project: e.target.value }))}
+                                  className={`px-2 py-1 rounded border text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                                >
+                                  <option value="">No project</option>
+                                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                                </select>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2">
+                                <input
+                                  value={timeBlockEditForm.start_time}
+                                  onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, start_time: e.target.value }))}
+                                  type="time"
+                                  className={`px-2 py-1 rounded border text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                                />
+                                <input
+                                  value={timeBlockEditForm.end_time}
+                                  onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, end_time: e.target.value }))}
+                                  type="time"
+                                  className={`px-2 py-1 rounded border text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                                />
+                              </div>
+                              <select
+                                value={timeBlockEditForm.todo_item}
+                                onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, todo_item: e.target.value }))}
+                                className={`px-2 py-1 rounded border text-xs w-full ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                              >
+                                <option value="">No linked todo</option>
+                                {todoItems.map((item) => <option key={item.id} value={item.id}>#{item.id} {item.title}</option>)}
+                              </select>
+                              <textarea
+                                value={timeBlockEditForm.notes}
+                                onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, notes: e.target.value }))}
+                                placeholder="notes"
+                                rows={2}
+                                className={`px-2 py-1 rounded border w-full text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600 text-slate-100' : 'bg-white border-gray-300 text-gray-900'}`}
+                              />
+                              <div className="flex gap-2">
+                                <button onClick={handleSaveTimeBlockEdit} disabled={busy} className="p-1 rounded bg-emerald-600 text-white"><Save size={12} /></button>
+                                <button onClick={() => setEditingTimeBlockId(null)} disabled={busy} className="p-1 rounded bg-gray-500 text-white"><X size={12} /></button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <div className="text-sm font-semibold">{block.title}</div>
+                                  <div className="text-xs text-gray-600 dark:text-gray-300">
+                                    {startLabel} - {endLabel} ({block.duration_minutes}m)
+                                  </div>
+                                  <div className="text-xs text-gray-600 dark:text-gray-300">
+                                    {getProjectName(block.project)}{block.todo_item ? ` | Todo #${block.todo_item}` : ''}
+                                  </div>
+                                </div>
+                                <div className="flex gap-1">
+                                  <button onClick={() => startEditTimeBlock(block)} disabled={busy} className="p-1 rounded bg-cyan-600 text-white">
+                                    <Edit3 size={12} />
+                                  </button>
+                                  <button onClick={() => handleDeleteTimeBlock(block.id)} disabled={busy} className="p-1 rounded bg-red-600 text-white">
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </div>
+                              {block.notes && (
+                                <div className={`text-xs mt-2 p-2 rounded border whitespace-pre-wrap ${theme === 'dark' ? 'text-slate-100 bg-slate-700 border-slate-600' : 'text-gray-900 bg-amber-50 border-amber-200'}`}>
+                                  {block.notes}
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {statusMsg && (
-        <div className={`text-sm p-3 rounded-xl ${statusMsg.toLowerCase().includes('failed') ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
+        <div className={`text-sm p-3 rounded-xl ${(statusMsg.toLowerCase().includes('failed') || statusMsg.toLowerCase().includes('conflict') || statusMsg.toLowerCase().includes('blocked')) ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
           {statusMsg}
         </div>
       )}

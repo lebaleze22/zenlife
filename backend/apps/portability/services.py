@@ -9,7 +9,7 @@ from apps.budgets.models import Budget, BudgetPeriod
 from apps.goals.models import Goal
 from apps.ledger.models import LedgerEntry
 from apps.notifications.models import ReminderRecord
-from apps.planning.models import ReservationAuditLog, ToBuyItem, ToBuyReservation, TodoItem
+from apps.planning.models import ReservationAuditLog, TimeBlock, ToBuyItem, ToBuyReservation, TodoItem
 from apps.projects.models import Project
 
 SCHEMA_VERSION = "v1"
@@ -82,6 +82,10 @@ class DataPortabilityService:
                 "todo_items": _serialize_queryset(
                     TodoItem.objects.filter(user=user).order_by("id"),
                     ["id", "project", "title", "description", "priority", "status", "due_date", "deleted_at"],
+                ),
+                "time_blocks": _serialize_queryset(
+                    TimeBlock.objects.filter(user=user).order_by("id"),
+                    ["id", "project", "todo_item", "title", "start_at", "end_at", "duration_minutes", "notes", "deleted_at"],
                 ),
                 "to_buy_items": _serialize_queryset(
                     ToBuyItem.objects.filter(user=user).order_by("id"),
@@ -171,6 +175,7 @@ class DataPortabilityService:
             "budget_periods": 0,
             "projects": 0,
             "todo_items": 0,
+            "time_blocks": 0,
             "to_buy_items": 0,
             "ledger_entries": 0,
             "reservations": 0,
@@ -275,6 +280,21 @@ class DataPortabilityService:
                 deleted_at=row.get("deleted_at"),
             )
             counts["todo_items"] += 1
+
+        for row in data.get("time_blocks", []):
+            TimeBlock.objects.create(
+                id=row["id"],
+                user=user,
+                project_id=row.get("project"),
+                todo_item_id=row.get("todo_item"),
+                title=row["title"],
+                start_at=row["start_at"],
+                end_at=row["end_at"],
+                duration_minutes=int(row.get("duration_minutes") or 0),
+                notes=row.get("notes") or "",
+                deleted_at=row.get("deleted_at"),
+            )
+            counts["time_blocks"] += 1
 
         for row in data.get("to_buy_items", []):
             ToBuyItem.objects.create(

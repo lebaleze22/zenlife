@@ -16,8 +16,8 @@ from apps.budgets.models import BudgetPeriod
 from apps.budgets.services import BudgetPeriodComputationService
 from apps.ledger.models import LedgerEntry
 from common.soft_delete import SoftDeleteModelViewSetMixin
-from .models import ReservationAuditLog, ToBuyItem, TodoItem, ToBuyReservation
-from .serializers import MarkRecordedSerializer, ToBuyItemSerializer, TodoItemSerializer, ToBuyReservationSerializer
+from .models import ReservationAuditLog, TimeBlock, ToBuyItem, TodoItem, ToBuyReservation
+from .serializers import MarkRecordedSerializer, TimeBlockSerializer, ToBuyItemSerializer, TodoItemSerializer, ToBuyReservationSerializer
 
 
 class ToBuyItemViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
@@ -352,3 +352,34 @@ class ToBuyReservationViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
             )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TimeBlockViewSet(SoftDeleteModelViewSetMixin, ModelViewSet):
+    permission_classes = [IsAuthenticated]
+    serializer_class = TimeBlockSerializer
+    queryset = TimeBlock.objects.select_related("project", "todo_item").all().order_by("start_at")
+
+    def get_queryset(self):
+        qs = self.queryset.filter(user=self.request.user)
+
+        from_dt = self.request.query_params.get("from")
+        to_dt = self.request.query_params.get("to")
+        project_id = self.request.query_params.get("project_id")
+        todo_item_id = self.request.query_params.get("todo_item_id")
+
+        if from_dt:
+            qs = qs.filter(start_at__gte=from_dt)
+        if to_dt:
+            qs = qs.filter(end_at__lte=to_dt)
+        if project_id:
+            qs = qs.filter(project_id=project_id)
+        if todo_item_id:
+            qs = qs.filter(todo_item_id=todo_item_id)
+
+        return self.apply_deleted_filter(qs)
+
+    def get_restore_queryset(self):
+        return self.queryset.filter(user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)

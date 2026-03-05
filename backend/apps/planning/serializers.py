@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from apps.accounts.models import Account, Category
-from .models import ToBuyItem, TodoItem, ToBuyReservation
+from .models import TimeBlock, ToBuyItem, TodoItem, ToBuyReservation
 
 
 ALLOWED_STATUS_TRANSITIONS = {
@@ -126,6 +126,45 @@ class MarkRecordedSerializer(serializers.Serializer):
 
         if amount is not None and amount <= 0:
             raise serializers.ValidationError({"amount": "Amount must be > 0."})
+
+        return attrs
+
+
+class TimeBlockSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TimeBlock
+        fields = "__all__"
+        read_only_fields = ("id", "user", "duration_minutes", "created_at", "updated_at", "deleted_at")
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+
+        project = attrs.get("project", getattr(self.instance, "project", None))
+        todo_item = attrs.get("todo_item", getattr(self.instance, "todo_item", None))
+        start_at = attrs.get("start_at", getattr(self.instance, "start_at", None))
+        end_at = attrs.get("end_at", getattr(self.instance, "end_at", None))
+
+        if start_at and end_at and end_at <= start_at:
+            raise serializers.ValidationError({"end_at": "end_at must be greater than start_at."})
+
+        if project is not None and user is not None and project.user_id != user.id:
+            raise serializers.ValidationError({"project": "Project does not belong to current user."})
+
+        if todo_item is not None and user is not None and todo_item.user_id != user.id:
+            raise serializers.ValidationError({"todo_item": "Todo item does not belong to current user."})
+
+        if user is not None and start_at is not None and end_at is not None:
+            overlaps = TimeBlock.objects.filter(
+                user=user,
+                deleted_at__isnull=True,
+                start_at__lt=end_at,
+                end_at__gt=start_at,
+            )
+            if self.instance is not None:
+                overlaps = overlaps.exclude(id=self.instance.id)
+            if overlaps.exists():
+                raise serializers.ValidationError({"start_at": "Time block overlaps with an existing time block."})
 
         return attrs
 

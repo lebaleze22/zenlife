@@ -158,3 +158,39 @@ class ReservationAuditLog(models.Model):
             models.Index(fields=["user", "action", "created_at"], name="idx_res_audit_user_ac_ct"),
             models.Index(fields=["reservation", "created_at"], name="idx_res_audit_res_ct"),
         ]
+
+
+class TimeBlock(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="time_blocks")
+    project = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True, related_name="time_blocks")
+    todo_item = models.ForeignKey("planning.TodoItem", on_delete=models.SET_NULL, null=True, blank=True, related_name="time_blocks")
+
+    title = models.CharField(max_length=200)
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    duration_minutes = models.PositiveIntegerField(default=0)
+    notes = models.TextField(blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["user", "start_at", "end_at"], name="idx_time_block_user_rng"),
+            models.Index(fields=["user", "project", "start_at"], name="idx_time_block_user_proj"),
+        ]
+
+    def clean(self):
+        if self.end_at <= self.start_at:
+            raise ValueError("end_at must be greater than start_at")
+        if self.project_id and self.user_id and self.project.user_id != self.user_id:
+            raise ValueError("project must belong to current user")
+        if self.todo_item_id and self.user_id and self.todo_item.user_id != self.user_id:
+            raise ValueError("todo_item must belong to current user")
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        delta = self.end_at - self.start_at
+        self.duration_minutes = int(delta.total_seconds() // 60)
+        super().save(*args, **kwargs)
