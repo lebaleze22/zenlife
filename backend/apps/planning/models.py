@@ -161,11 +161,21 @@ class ReservationAuditLog(models.Model):
 
 
 class TimeBlock(models.Model):
+    class BlockKind(models.TextChoices):
+        DEEP_WORK = "DEEP_WORK", "Deep Work"
+        MEETING = "MEETING", "Meeting"
+        ADMIN = "ADMIN", "Admin"
+        BREAK = "BREAK", "Break"
+        PERSONAL = "PERSONAL", "Personal"
+        GENERAL = "GENERAL", "General"
+
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="time_blocks")
     project = models.ForeignKey("projects.Project", on_delete=models.SET_NULL, null=True, blank=True, related_name="time_blocks")
     todo_item = models.ForeignKey("planning.TodoItem", on_delete=models.SET_NULL, null=True, blank=True, related_name="time_blocks")
 
     title = models.CharField(max_length=200)
+    block_kind = models.CharField(max_length=16, choices=BlockKind.choices, default=BlockKind.GENERAL)
+    is_completed = models.BooleanField(default=False)
     start_at = models.DateTimeField()
     end_at = models.DateTimeField()
     duration_minutes = models.PositiveIntegerField(default=0)

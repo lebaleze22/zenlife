@@ -77,6 +77,53 @@ const formatDayLabel = (isoDate: string) =>
     timeZone: 'UTC',
   });
 
+const parseHHMMToMinutes = (hhmm: string) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+};
+
+const formatMinutesToHHMM = (totalMinutes: number) => {
+  const clamped = Math.max(0, Math.min((24 * 60) - 1, totalMinutes));
+  const h = Math.floor(clamped / 60);
+  const m = clamped % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+};
+
+const formatMinutesToHoursLabel = (totalMinutes: number) => {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${h}h ${String(m).padStart(2, '0')}m`;
+};
+
+const BLOCK_KIND_OPTIONS = [
+  { value: 'GENERAL', label: 'General' },
+  { value: 'DEEP_WORK', label: 'Deep Work' },
+  { value: 'MEETING', label: 'Meeting' },
+  { value: 'ADMIN', label: 'Admin' },
+  { value: 'BREAK', label: 'Break' },
+  { value: 'PERSONAL', label: 'Personal' },
+] as const;
+
+const blockKindLabel = (kind: string) =>
+  BLOCK_KIND_OPTIONS.find((x) => x.value === kind)?.label || 'General';
+
+const blockKindClassName = (kind: string) => {
+  switch (kind) {
+    case 'DEEP_WORK':
+      return 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/30 dark:text-blue-200 dark:border-blue-700';
+    case 'MEETING':
+      return 'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-300 dark:bg-fuchsia-900/30 dark:text-fuchsia-200 dark:border-fuchsia-700';
+    case 'ADMIN':
+      return 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/30 dark:text-amber-200 dark:border-amber-700';
+    case 'BREAK':
+      return 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700';
+    case 'PERSONAL':
+      return 'bg-rose-100 text-rose-700 border-rose-300 dark:bg-rose-900/30 dark:text-rose-200 dark:border-rose-700';
+    default:
+      return 'bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/30 dark:text-slate-200 dark:border-slate-700';
+  }
+};
+
 const PlanningSection: React.FC = () => {
   const pageSize = 10;
   const { language, theme } = useApp();
@@ -96,7 +143,15 @@ const PlanningSection: React.FC = () => {
   const [selectedReservePeriodId, setSelectedReservePeriodId] = useState('');
   const [weekAnchorDate, setWeekAnchorDate] = useState(new Date().toISOString().slice(0, 10));
   const [draggingTimeBlockId, setDraggingTimeBlockId] = useState<number | null>(null);
+  const [dragTargetDay, setDragTargetDay] = useState<string | null>(null);
   const [editingTimeBlockId, setEditingTimeBlockId] = useState<number | null>(null);
+  const [timeBlockCompletionFilter, setTimeBlockCompletionFilter] = useState<'ALL' | 'ACTIVE' | 'COMPLETED'>('ALL');
+  const [dailyTargetMinutes, setDailyTargetMinutes] = useState(() => {
+    const raw = localStorage.getItem('planning_daily_target_minutes');
+    const parsed = raw ? Number(raw) : 8 * 60;
+    if (Number.isNaN(parsed) || parsed < 60 || parsed > 16 * 60) return 8 * 60;
+    return parsed;
+  });
   const [editingToBuyId, setEditingToBuyId] = useState<number | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<number | null>(null);
   const [toBuyEditForm, setToBuyEditForm] = useState({
@@ -153,15 +208,19 @@ const PlanningSection: React.FC = () => {
     project: '',
     todo_item: '',
     title: '',
+    block_kind: 'GENERAL' as 'DEEP_WORK' | 'MEETING' | 'ADMIN' | 'BREAK' | 'PERSONAL' | 'GENERAL',
     date: new Date().toISOString().split('T')[0],
     start_time: '09:00',
     end_time: '10:00',
     notes: '',
+    repeat_pattern: 'NONE' as 'NONE' | 'DAILY' | 'WEEKLY',
+    repeat_count: '1',
   });
   const [timeBlockEditForm, setTimeBlockEditForm] = useState({
     project: '',
     todo_item: '',
     title: '',
+    block_kind: 'GENERAL' as 'DEEP_WORK' | 'MEETING' | 'ADMIN' | 'BREAK' | 'PERSONAL' | 'GENERAL',
     date: '',
     start_time: '',
     end_time: '',
@@ -227,9 +286,14 @@ const PlanningSection: React.FC = () => {
     [weekStart]
   );
   const timeBlocksByDay = useMemo(() => {
+    const visibleTimeBlocks = timeBlocks.filter((block) => {
+      if (timeBlockCompletionFilter === 'ACTIVE') return !block.is_completed;
+      if (timeBlockCompletionFilter === 'COMPLETED') return block.is_completed;
+      return true;
+    });
     const map = new Map<string, TimeBlockDto[]>();
     weekDays.forEach((day) => map.set(day, []));
-    timeBlocks.forEach((block) => {
+    visibleTimeBlocks.forEach((block) => {
       const day = block.start_at.slice(0, 10);
       if (!map.has(day)) return;
       map.get(day)!.push(block);
@@ -238,7 +302,32 @@ const PlanningSection: React.FC = () => {
       blocks.sort((a, b) => a.start_at.localeCompare(b.start_at));
     });
     return map;
+  }, [timeBlocks, weekDays, timeBlockCompletionFilter]);
+  const plannedMinutesByDay = useMemo(() => {
+    const map = new Map<string, number>();
+    weekDays.forEach((day) => map.set(day, 0));
+    timeBlocks.forEach((block) => {
+      const day = block.start_at.slice(0, 10);
+      if (!map.has(day)) return;
+      map.set(day, (map.get(day) || 0) + (block.duration_minutes || 0));
+    });
+    return map;
   }, [timeBlocks, weekDays]);
+  const weeklyPlannedMinutes = useMemo(
+    () => Array.from(plannedMinutesByDay.values()).reduce((sum, minutes) => sum + minutes, 0),
+    [plannedMinutesByDay]
+  );
+  const weeklyCompletedCount = useMemo(() => timeBlocks.filter((x) => x.is_completed).length, [timeBlocks]);
+  const weeklyCompletionRate = useMemo(() => {
+    if (timeBlocks.length === 0) return 0;
+    return Math.round((weeklyCompletedCount / timeBlocks.length) * 100);
+  }, [timeBlocks, weeklyCompletedCount]);
+  const weeklyCapacityMinutes = useMemo(() => dailyTargetMinutes * 7, [dailyTargetMinutes]);
+  const weeklyOverloadMinutes = Math.max(0, weeklyPlannedMinutes - weeklyCapacityMinutes);
+
+  useEffect(() => {
+    localStorage.setItem('planning_daily_target_minutes', String(dailyTargetMinutes));
+  }, [dailyTargetMinutes]);
 
   const loadData = async () => {
     if (!hasToken) {
@@ -319,6 +408,31 @@ const PlanningSection: React.FC = () => {
         return candidateStart < existingEnd && existingStart < candidateEnd;
       }) || null
     );
+  };
+
+  const findConflictingTimeBlockLocal = (startAt: string, endAt: string, excludeId?: number) => {
+    const candidateStart = new Date(startAt).getTime();
+    const candidateEnd = new Date(endAt).getTime();
+    return (
+      timeBlocks.find((x) => {
+        if (excludeId && x.id === excludeId) return false;
+        const existingStart = new Date(x.start_at).getTime();
+        const existingEnd = new Date(x.end_at).getTime();
+        return candidateStart < existingEnd && existingStart < candidateEnd;
+      }) || null
+    );
+  };
+
+  const updateTimeBlockRange = async (blockId: number, startAt: string, endAt: string, successMessage: string) => {
+    setBusy(true);
+    const conflict = await findConflictingTimeBlock(startAt, endAt, blockId);
+    if (conflict) {
+      setStatusMsg(`Conflict: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
+      return;
+    }
+    await updateTimeBlock(blockId, { start_at: startAt, end_at: endAt });
+    await loadData();
+    setStatusMsg(successMessage);
   };
 
   const handleCreateToBuy = async () => {
@@ -540,25 +654,46 @@ const PlanningSection: React.FC = () => {
       setStatusMsg('End time must be after start time.');
       return;
     }
+    const repeatCount = Math.max(1, Number(timeBlockForm.repeat_count || '1'));
+    if (Number.isNaN(repeatCount) || repeatCount > 30) {
+      setStatusMsg('Repeat count must be between 1 and 30.');
+      return;
+    }
 
     try {
       setBusy(true);
-      const conflict = await findConflictingTimeBlock(startAt, endAt);
-      if (conflict) {
-        setStatusMsg(`Conflict: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
-        return;
+      let created = 0;
+      let skipped = 0;
+      for (let i = 0; i < repeatCount; i += 1) {
+        const offset = timeBlockForm.repeat_pattern === 'WEEKLY' ? i * 7 : i;
+        const day = addDaysIso(timeBlockForm.date, offset);
+        const candidateStartAt = toApiDateTime(day, timeBlockForm.start_time);
+        const candidateEndAt = toApiDateTime(day, timeBlockForm.end_time);
+        const conflict = await findConflictingTimeBlock(candidateStartAt, candidateEndAt);
+        if (conflict) {
+          skipped += 1;
+          continue;
+        }
+        await createTimeBlock({
+          project: timeBlockForm.project ? Number(timeBlockForm.project) : null,
+          todo_item: timeBlockForm.todo_item ? Number(timeBlockForm.todo_item) : null,
+          title: timeBlockForm.title.trim(),
+          block_kind: timeBlockForm.block_kind,
+          start_at: candidateStartAt,
+          end_at: candidateEndAt,
+          notes: timeBlockForm.notes.trim() || undefined,
+        });
+        created += 1;
       }
-      await createTimeBlock({
-        project: timeBlockForm.project ? Number(timeBlockForm.project) : null,
-        todo_item: timeBlockForm.todo_item ? Number(timeBlockForm.todo_item) : null,
-        title: timeBlockForm.title.trim(),
-        start_at: startAt,
-        end_at: endAt,
-        notes: timeBlockForm.notes.trim() || undefined,
-      });
-      setTimeBlockForm((p) => ({ ...p, title: '', notes: '' }));
+      setTimeBlockForm((p) => ({ ...p, title: '', notes: '', block_kind: 'GENERAL', repeat_pattern: 'NONE', repeat_count: '1' }));
       await loadData();
-      setStatusMsg('Time block created.');
+      if (created === 0) {
+        setStatusMsg('No time blocks created (all conflicted).');
+      } else if (skipped > 0) {
+        setStatusMsg(`Created ${created} block(s), skipped ${skipped} due to conflicts.`);
+      } else {
+        setStatusMsg(`Created ${created} time block(s).`);
+      }
     } catch (error) {
       setStatusMsg(`Create time block failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
@@ -580,12 +715,26 @@ const PlanningSection: React.FC = () => {
     }
   };
 
+  const handleToggleTimeBlockCompleted = async (block: TimeBlockDto) => {
+    try {
+      setBusy(true);
+      await updateTimeBlock(block.id, { is_completed: !block.is_completed });
+      await loadData();
+      setStatusMsg(block.is_completed ? `Marked "${block.title}" as not completed.` : `Marked "${block.title}" as completed.`);
+    } catch (error) {
+      setStatusMsg(`Completion update failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const startEditTimeBlock = (block: TimeBlockDto) => {
     setEditingTimeBlockId(block.id);
     setTimeBlockEditForm({
       project: block.project ? String(block.project) : '',
       todo_item: block.todo_item ? String(block.todo_item) : '',
       title: block.title,
+      block_kind: block.block_kind || 'GENERAL',
       date: block.start_at.slice(0, 10),
       start_time: block.start_at.slice(11, 16),
       end_time: block.end_at.slice(11, 16),
@@ -617,6 +766,7 @@ const PlanningSection: React.FC = () => {
         project: timeBlockEditForm.project ? Number(timeBlockEditForm.project) : null,
         todo_item: timeBlockEditForm.todo_item ? Number(timeBlockEditForm.todo_item) : null,
         title: timeBlockEditForm.title.trim(),
+        block_kind: timeBlockEditForm.block_kind,
         start_at: startAt,
         end_at: endAt,
         notes: timeBlockEditForm.notes.trim() || '',
@@ -631,17 +781,107 @@ const PlanningSection: React.FC = () => {
     }
   };
 
+  const handleResizeTimeBlock = async (block: TimeBlockDto, edge: 'start' | 'end', deltaMinutes: number) => {
+    const day = block.start_at.slice(0, 10);
+    const startMinutes = parseHHMMToMinutes(block.start_at.slice(11, 16));
+    const endMinutes = parseHHMMToMinutes(block.end_at.slice(11, 16));
+
+    let nextStartMinutes = startMinutes;
+    let nextEndMinutes = endMinutes;
+    if (edge === 'start') {
+      nextStartMinutes = startMinutes + deltaMinutes;
+    } else {
+      nextEndMinutes = endMinutes + deltaMinutes;
+    }
+
+    if (nextStartMinutes < 0 || nextEndMinutes > (24 * 60) - 1) {
+      setStatusMsg('Cannot resize outside the day.');
+      return;
+    }
+    if (nextEndMinutes - nextStartMinutes < 15) {
+      setStatusMsg('Time block must be at least 15 minutes.');
+      return;
+    }
+
+    const nextStartAt = toApiDateTime(day, formatMinutesToHHMM(nextStartMinutes));
+    const nextEndAt = toApiDateTime(day, formatMinutesToHHMM(nextEndMinutes));
+    const localConflict = findConflictingTimeBlockLocal(nextStartAt, nextEndAt, block.id);
+    if (localConflict) {
+      setStatusMsg(`Resize blocked: overlaps with "${localConflict.title}".`);
+      return;
+    }
+
+    try {
+      await updateTimeBlockRange(block.id, nextStartAt, nextEndAt, `Resized "${block.title}".`);
+    } catch (error) {
+      setStatusMsg(`Resize failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUseTimeBlockAsTemplate = (block: TimeBlockDto) => {
+    setTimeBlockForm((p) => ({
+      ...p,
+      project: block.project ? String(block.project) : '',
+      todo_item: block.todo_item ? String(block.todo_item) : '',
+      title: block.title,
+      block_kind: block.block_kind || 'GENERAL',
+      date: block.start_at.slice(0, 10),
+      start_time: block.start_at.slice(11, 16),
+      end_time: block.end_at.slice(11, 16),
+      notes: block.notes || '',
+      repeat_pattern: 'NONE',
+      repeat_count: '1',
+    }));
+    setStatusMsg(`Template loaded from "${block.title}".`);
+  };
+
+  const handleDuplicateTimeBlockNextWeek = async (block: TimeBlockDto) => {
+    const sourceDay = block.start_at.slice(0, 10);
+    const targetDay = addDaysIso(sourceDay, 7);
+    const startTime = block.start_at.slice(11, 16);
+    const endTime = block.end_at.slice(11, 16);
+    const nextStartAt = toApiDateTime(targetDay, startTime);
+    const nextEndAt = toApiDateTime(targetDay, endTime);
+    try {
+      setBusy(true);
+      const conflict = await findConflictingTimeBlock(nextStartAt, nextEndAt);
+      if (conflict) {
+        setStatusMsg(`Duplicate blocked: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
+        return;
+      }
+      await createTimeBlock({
+        project: block.project,
+        todo_item: block.todo_item,
+        title: block.title,
+        block_kind: block.block_kind,
+        start_at: nextStartAt,
+        end_at: nextEndAt,
+        notes: block.notes || undefined,
+      });
+      await loadData();
+      setStatusMsg(`Duplicated "${block.title}" to ${targetDay}.`);
+    } catch (error) {
+      setStatusMsg(`Duplicate failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleDropTimeBlock = async (targetDay: string) => {
     if (!draggingTimeBlockId) return;
     const block = timeBlocks.find((x) => x.id === draggingTimeBlockId);
     if (!block) {
       setDraggingTimeBlockId(null);
+      setDragTargetDay(null);
       return;
     }
 
     const currentDay = block.start_at.slice(0, 10);
     if (currentDay === targetDay) {
       setDraggingTimeBlockId(null);
+      setDragTargetDay(null);
       return;
     }
 
@@ -651,19 +891,12 @@ const PlanningSection: React.FC = () => {
     const nextEndAt = toApiDateTime(targetDay, endTime);
 
     try {
-      setBusy(true);
-      const conflict = await findConflictingTimeBlock(nextStartAt, nextEndAt, block.id);
-      if (conflict) {
-        setStatusMsg(`Move blocked: overlaps with "${conflict.title}" (${conflict.start_at.slice(11, 16)}-${conflict.end_at.slice(11, 16)}).`);
-        return;
-      }
-      await updateTimeBlock(block.id, { start_at: nextStartAt, end_at: nextEndAt });
-      await loadData();
-      setStatusMsg(`Moved "${block.title}" to ${targetDay}.`);
+      await updateTimeBlockRange(block.id, nextStartAt, nextEndAt, `Moved "${block.title}" to ${targetDay}.`);
     } catch (error) {
       setStatusMsg(`Move failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       setDraggingTimeBlockId(null);
+      setDragTargetDay(null);
       setBusy(false);
     }
   };
@@ -1101,6 +1334,16 @@ const PlanningSection: React.FC = () => {
       {tab === 'timeblocks' && (
         <div className={`p-6 rounded-2xl border space-y-4 ${theme === 'dark' ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-100'}`}>
           <h3 className="text-lg font-bold">Create Time Block</h3>
+          <div className={`p-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-200'}`}>
+            <div className="text-xs font-semibold mb-2">Type colors</div>
+            <div className="flex flex-wrap gap-2">
+              {BLOCK_KIND_OPTIONS.map((x) => (
+                <span key={x.value} className={`text-[10px] px-2 py-0.5 rounded border ${blockKindClassName(x.value)}`}>
+                  {x.label}
+                </span>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <select
               value={timeBlockForm.project}
@@ -1124,6 +1367,14 @@ const PlanningSection: React.FC = () => {
               placeholder="title"
               className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
             />
+            <select
+              value={timeBlockForm.block_kind}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, block_kind: e.target.value as typeof p.block_kind }))}
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            >
+              <option value="" disabled>Type</option>
+              {BLOCK_KIND_OPTIONS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+            </select>
             <input
               value={timeBlockForm.date}
               onChange={(e) => setTimeBlockForm((p) => ({ ...p, date: e.target.value }))}
@@ -1142,6 +1393,24 @@ const PlanningSection: React.FC = () => {
               type="time"
               className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
             />
+            <select
+              value={timeBlockForm.repeat_pattern}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, repeat_pattern: e.target.value as 'NONE' | 'DAILY' | 'WEEKLY' }))}
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            >
+              <option value="NONE">No repeat</option>
+              <option value="DAILY">Repeat daily</option>
+              <option value="WEEKLY">Repeat weekly</option>
+            </select>
+            <input
+              value={timeBlockForm.repeat_count}
+              onChange={(e) => setTimeBlockForm((p) => ({ ...p, repeat_count: e.target.value }))}
+              type="number"
+              min={1}
+              max={30}
+              placeholder="Occurrences"
+              className={`px-3 py-2 rounded-lg border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-gray-50 border-gray-100'}`}
+            />
             <textarea
               value={timeBlockForm.notes}
               onChange={(e) => setTimeBlockForm((p) => ({ ...p, notes: e.target.value }))}
@@ -1155,6 +1424,52 @@ const PlanningSection: React.FC = () => {
           <div className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-3 ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-100'}`}>
             <div className="text-sm font-semibold">
               Week: {weekDays[0]} to {weekDays[6]}
+            </div>
+            <div className={`flex items-center gap-2 text-xs px-3 py-1 rounded-lg border ${theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-gray-200 text-gray-900'}`}>
+              <span>Daily target</span>
+              <input
+                type="number"
+                min={1}
+                max={16}
+                value={Math.round(dailyTargetMinutes / 60)}
+                onChange={(e) => {
+                  const hours = Number(e.target.value);
+                  if (Number.isNaN(hours)) return;
+                  const clamped = Math.min(16, Math.max(1, hours));
+                  setDailyTargetMinutes(clamped * 60);
+                }}
+                className={`w-14 px-2 py-1 rounded border ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+              />
+              <span>h</span>
+            </div>
+            <div className={`text-sm px-3 py-1 rounded-lg border ${theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-gray-200 text-gray-900'}`}>
+              Total planned: {formatMinutesToHoursLabel(weeklyPlannedMinutes)}
+            </div>
+            <div className={`text-sm px-3 py-1 rounded-lg border ${weeklyOverloadMinutes > 0 ? 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-200 dark:border-red-700' : (theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-gray-200 text-gray-900')}`}>
+              Capacity: {formatMinutesToHoursLabel(weeklyCapacityMinutes)}{weeklyOverloadMinutes > 0 ? ` (Over ${formatMinutesToHoursLabel(weeklyOverloadMinutes)})` : ''}
+            </div>
+            <div className={`text-sm px-3 py-1 rounded-lg border ${theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-gray-200 text-gray-900'}`}>
+              Completed: {weeklyCompletedCount}/{timeBlocks.length} ({weeklyCompletionRate}%)
+            </div>
+            <div className="flex gap-1">
+              <button
+                onClick={() => setTimeBlockCompletionFilter('ALL')}
+                className={`px-2 py-1 rounded text-xs border ${timeBlockCompletionFilter === 'ALL' ? 'bg-slate-700 text-white border-slate-700' : 'border-gray-300 text-gray-600 dark:text-gray-300'}`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setTimeBlockCompletionFilter('ACTIVE')}
+                className={`px-2 py-1 rounded text-xs border ${timeBlockCompletionFilter === 'ACTIVE' ? 'bg-blue-700 text-white border-blue-700' : 'border-gray-300 text-gray-600 dark:text-gray-300'}`}
+              >
+                Active
+              </button>
+              <button
+                onClick={() => setTimeBlockCompletionFilter('COMPLETED')}
+                className={`px-2 py-1 rounded text-xs border ${timeBlockCompletionFilter === 'COMPLETED' ? 'bg-emerald-700 text-white border-emerald-700' : 'border-gray-300 text-gray-600 dark:text-gray-300'}`}
+              >
+                Completed
+              </button>
             </div>
             <div className="flex gap-2">
               <button
@@ -1181,20 +1496,54 @@ const PlanningSection: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-3">
             {weekDays.map((day) => {
               const blocks = timeBlocksByDay.get(day) || [];
+              const dayTotalMinutes = plannedMinutesByDay.get(day) || 0;
+              const dayOverloadMinutes = Math.max(0, dayTotalMinutes - dailyTargetMinutes);
+              const draggingBlock = draggingTimeBlockId ? timeBlocks.find((x) => x.id === draggingTimeBlockId) : null;
+              const dragStartTime = draggingBlock?.start_at.slice(11, 16);
+              const dragEndTime = draggingBlock?.end_at.slice(11, 16);
+              const dropStartAt = draggingBlock && dragStartTime ? toApiDateTime(day, dragStartTime) : null;
+              const dropEndAt = draggingBlock && dragEndTime ? toApiDateTime(day, dragEndTime) : null;
+              const dropConflict = dropStartAt && dropEndAt && draggingBlock
+                ? findConflictingTimeBlockLocal(dropStartAt, dropEndAt, draggingBlock.id)
+                : null;
+              const isActiveDropTarget = dragTargetDay === day && draggingBlock !== null;
               return (
                 <div
                   key={day}
                   onDragOver={(e) => e.preventDefault()}
+                  onDragEnter={() => setDragTargetDay(day)}
+                  onDragLeave={(e) => {
+                    const related = e.relatedTarget as Node | null;
+                    if (related && e.currentTarget.contains(related)) return;
+                    setDragTargetDay(null);
+                  }}
                   onDrop={(e) => {
                     e.preventDefault();
                     void handleDropTimeBlock(day);
                   }}
-                  className={`p-3 rounded-xl border min-h-44 transition-colors ${draggingTimeBlockId ? 'border-dashed' : ''} ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-200'}`}
+                  className={`p-3 rounded-xl border min-h-44 transition-colors ${draggingTimeBlockId ? 'border-dashed' : ''} ${isActiveDropTarget ? (dropConflict ? 'border-red-500 bg-red-50/60 dark:bg-red-900/20' : 'border-emerald-500 bg-emerald-50/60 dark:bg-emerald-900/20') : ''} ${theme === 'dark' ? 'bg-slate-900/30 border-slate-700' : 'bg-gray-50 border-gray-200'}`}
                 >
-                  <div className="font-semibold text-sm mb-2">
-                    {formatDayLabel(day)}
-                    <span className="ml-2 text-xs text-gray-500">{day}</span>
+                  <div className="font-semibold text-sm mb-2 flex items-center justify-between gap-2">
+                    <span>
+                      {formatDayLabel(day)}
+                      <span className="ml-2 text-xs text-gray-500">{day}</span>
+                    </span>
+                    <div className="flex flex-col items-end gap-1">
+                      <span className={`text-[10px] px-2 py-0.5 rounded border ${dayOverloadMinutes > 0 ? 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-200 dark:border-red-700' : (theme === 'dark' ? 'bg-slate-800 border-slate-600 text-slate-100' : 'bg-white border-gray-200 text-gray-700')}`}>
+                        {formatMinutesToHoursLabel(dayTotalMinutes)}
+                      </span>
+                      {dayOverloadMinutes > 0 && (
+                        <span className="text-[10px] text-red-600 dark:text-red-300">
+                          Over {formatMinutesToHoursLabel(dayOverloadMinutes)}
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  {isActiveDropTarget && draggingBlock && (
+                    <div className={`text-[10px] mb-2 px-2 py-1 rounded border ${dropConflict ? 'bg-red-100 text-red-700 border-red-300 dark:bg-red-900/30 dark:text-red-200 dark:border-red-700' : 'bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-900/30 dark:text-emerald-200 dark:border-emerald-700'}`}>
+                      {dropConflict ? `Conflict with "${dropConflict.title}"` : 'Drop to move here'}
+                    </div>
+                  )}
                   <div className="space-y-2">
                     {blocks.length === 0 && <div className="text-xs text-gray-500">No blocks</div>}
                     {blocks.map((block) => {
@@ -1204,8 +1553,14 @@ const PlanningSection: React.FC = () => {
                         <div
                           key={block.id}
                           draggable={editingTimeBlockId !== block.id}
-                          onDragStart={() => setDraggingTimeBlockId(block.id)}
-                          onDragEnd={() => setDraggingTimeBlockId(null)}
+                          onDragStart={() => {
+                            setDraggingTimeBlockId(block.id);
+                            setDragTargetDay(block.start_at.slice(0, 10));
+                          }}
+                          onDragEnd={() => {
+                            setDraggingTimeBlockId(null);
+                            setDragTargetDay(null);
+                          }}
                           className={`rounded-lg border p-2 cursor-move shadow-sm ${theme === 'dark' ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-300'}`}
                         >
                           {editingTimeBlockId === block.id ? (
@@ -1215,6 +1570,13 @@ const PlanningSection: React.FC = () => {
                                 onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, title: e.target.value }))}
                                 className={`px-2 py-1 rounded border w-full text-xs ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
                               />
+                              <select
+                                value={timeBlockEditForm.block_kind}
+                                onChange={(e) => setTimeBlockEditForm((p) => ({ ...p, block_kind: e.target.value as typeof p.block_kind }))}
+                                className={`px-2 py-1 rounded border text-xs w-full ${theme === 'dark' ? 'bg-slate-700 border-slate-600' : 'bg-white border-gray-200'}`}
+                              >
+                                {BLOCK_KIND_OPTIONS.map((x) => <option key={x.value} value={x.value}>{x.label}</option>)}
+                              </select>
                               <div className="grid grid-cols-2 gap-2">
                                 <input
                                   value={timeBlockEditForm.date}
@@ -1267,23 +1629,97 @@ const PlanningSection: React.FC = () => {
                             </div>
                           ) : (
                             <>
-                              <div className="flex items-start justify-between gap-2">
-                                <div>
-                                  <div className="text-sm font-semibold">{block.title}</div>
-                                  <div className="text-xs text-gray-600 dark:text-gray-300">
-                                    {startLabel} - {endLabel} ({block.duration_minutes}m)
-                                  </div>
-                                  <div className="text-xs text-gray-600 dark:text-gray-300">
-                                    {getProjectName(block.project)}{block.todo_item ? ` | Todo #${block.todo_item}` : ''}
-                                  </div>
+                              <div className="min-w-0">
+                                <div className={`text-sm font-semibold break-words ${block.is_completed ? 'line-through opacity-70' : ''}`}>{block.title}</div>
+                                <div className={`inline-flex mt-1 text-[10px] px-2 py-0.5 rounded border ${blockKindClassName(block.block_kind)}`}>
+                                  {blockKindLabel(block.block_kind)}
                                 </div>
-                                <div className="flex gap-1">
+                                <div className="text-xs text-gray-600 dark:text-gray-300">
+                                  {startLabel} - {endLabel} ({block.duration_minutes}m)
+                                </div>
+                                <div className="text-xs text-gray-600 dark:text-gray-300">
+                                  {getProjectName(block.project)}{block.todo_item ? ` | Todo #${block.todo_item}` : ''}
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  <button
+                                    onClick={() => void handleToggleTimeBlockCompleted(block)}
+                                    disabled={busy}
+                                    className={`px-2 py-1 rounded text-white text-[10px] font-semibold ${block.is_completed ? 'bg-slate-600' : 'bg-lime-600'}`}
+                                  >
+                                    {block.is_completed ? 'Undo' : 'Done'}
+                                  </button>
+                                  <button
+                                    onClick={() => handleUseTimeBlockAsTemplate(block)}
+                                    disabled={busy}
+                                    className="px-2 py-1 rounded bg-indigo-600 text-white text-[10px] font-semibold"
+                                  >
+                                    Tpl
+                                  </button>
+                                  <button
+                                    onClick={() => void handleDuplicateTimeBlockNextWeek(block)}
+                                    disabled={busy}
+                                    className="px-2 py-1 rounded bg-emerald-700 text-white text-[10px] font-semibold"
+                                  >
+                                    +7d
+                                  </button>
                                   <button onClick={() => startEditTimeBlock(block)} disabled={busy} className="p-1 rounded bg-cyan-600 text-white">
                                     <Edit3 size={12} />
                                   </button>
                                   <button onClick={() => handleDeleteTimeBlock(block.id)} disabled={busy} className="p-1 rounded bg-red-600 text-white">
                                     <Trash2 size={12} />
                                   </button>
+                                </div>
+                              </div>
+                              <div className="mt-2 grid grid-cols-2 gap-2 text-[10px]">
+                                <div className={`rounded border p-1 ${theme === 'dark' ? 'border-slate-600 bg-slate-700/40' : 'border-gray-200 bg-gray-50'}`}>
+                                  <div className="mb-1 font-semibold">Start</div>
+                                  <div className="flex flex-wrap gap-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleResizeTimeBlock(block, 'start', -15);
+                                      }}
+                                      disabled={busy}
+                                      className="px-1.5 py-0.5 rounded bg-slate-500 text-white disabled:opacity-50"
+                                    >
+                                      -15
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleResizeTimeBlock(block, 'start', 15);
+                                      }}
+                                      disabled={busy}
+                                      className="px-1.5 py-0.5 rounded bg-slate-500 text-white disabled:opacity-50"
+                                    >
+                                      +15
+                                    </button>
+                                  </div>
+                                </div>
+                                <div className={`rounded border p-1 ${theme === 'dark' ? 'border-slate-600 bg-slate-700/40' : 'border-gray-200 bg-gray-50'}`}>
+                                  <div className="mb-1 font-semibold">End</div>
+                                  <div className="flex flex-wrap gap-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleResizeTimeBlock(block, 'end', -15);
+                                      }}
+                                      disabled={busy}
+                                      className="px-1.5 py-0.5 rounded bg-slate-500 text-white disabled:opacity-50"
+                                    >
+                                      -15
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void handleResizeTimeBlock(block, 'end', 15);
+                                      }}
+                                      disabled={busy}
+                                      className="px-1.5 py-0.5 rounded bg-slate-500 text-white disabled:opacity-50"
+                                    >
+                                      +15
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
                               {block.notes && (

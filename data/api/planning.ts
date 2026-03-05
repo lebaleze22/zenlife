@@ -60,6 +60,8 @@ export interface TimeBlockDto {
   project: number | null;
   todo_item: number | null;
   title: string;
+  block_kind: 'DEEP_WORK' | 'MEETING' | 'ADMIN' | 'BREAK' | 'PERSONAL' | 'GENERAL';
+  is_completed: boolean;
   start_at: string;
   end_at: string;
   duration_minutes: number;
@@ -98,6 +100,8 @@ export interface CreateTimeBlockInput {
   project?: number | null;
   todo_item?: number | null;
   title: string;
+  block_kind?: 'DEEP_WORK' | 'MEETING' | 'ADMIN' | 'BREAK' | 'PERSONAL' | 'GENERAL';
+  is_completed?: boolean;
   start_at: string;
   end_at: string;
   notes?: string;

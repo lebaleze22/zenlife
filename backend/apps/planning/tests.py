@@ -218,6 +218,7 @@ class TimeBlockApiTests(APITestCase):
             "/api/v1/time-blocks/",
             {
                 "title": "Deep Work Session",
+                "block_kind": "DEEP_WORK",
                 "start_at": "2026-03-05T09:00:00Z",
                 "end_at": "2026-03-05T10:30:00Z",
                 "notes": "Math revision",
@@ -227,6 +228,42 @@ class TimeBlockApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["duration_minutes"], 90)
         self.assertEqual(response.data["title"], "Deep Work Session")
+        self.assertEqual(response.data["block_kind"], "DEEP_WORK")
+        self.assertEqual(response.data["is_completed"], False)
+
+    def test_create_time_block_defaults_block_kind(self):
+        response = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "General Session",
+                "start_at": "2026-03-06T09:00:00Z",
+                "end_at": "2026-03-06T09:30:00Z",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["block_kind"], "GENERAL")
+        self.assertEqual(response.data["is_completed"], False)
+
+    def test_update_time_block_completion_flag(self):
+        created = self.client.post(
+            "/api/v1/time-blocks/",
+            {
+                "title": "Checklist",
+                "start_at": "2026-03-06T10:00:00Z",
+                "end_at": "2026-03-06T11:00:00Z",
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, status.HTTP_201_CREATED)
+
+        response = self.client.patch(
+            f"/api/v1/time-blocks/{created.data['id']}/",
+            {"is_completed": True},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["is_completed"], True)
 
     def test_create_time_block_rejects_invalid_range(self):
         response = self.client.post(
